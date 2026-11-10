@@ -1,10 +1,20 @@
 #!/usr/bin/env python3
 """Sequential planner -> coder -> reviewer -> tester -> security reviewer workflow."""
 from __future__ import annotations
-import os, pathlib, subprocess, sys, uuid, json, datetime
+
+import contextlib
+import datetime
+import json
+import os
+import pathlib
+import subprocess
+import sys
+import uuid
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 ROUTER = ROOT / "scripts/router.py"
+STATE_DIR = ROOT / "state"
+DEFAULT_CONTEXT_CHARS = 6000
 
 ROLES = [
     ("planner", "general", "Analyze the request, repository constraints, risks, and implementation plan. Do not modify files. Return a concise actionable plan."),
@@ -13,6 +23,30 @@ ROLES = [
     ("tester", "fast", "Run or inspect the project's relevant tests and validation. Do not invent test results. Report exact commands and outcomes."),
     ("security_reviewer", "review", "Perform an independent security review of the changes: trust boundaries, authn/authz, secrets, injection, unsafe deserialization, SSRF, path traversal, dependency and supply-chain risks. Do not modify files.")
 ]
+
+def context_limit(value: str | None = None) -> int:
+    """Parse CONTEXT_CHARS. Invalid values fall back; negatives clamp to 0."""
+    raw = os.getenv("CONTEXT_CHARS", str(DEFAULT_CONTEXT_CHARS)) if value is None else value
+    try: number = int(raw)
+    except (TypeError, ValueError): return DEFAULT_CONTEXT_CHARS
+    return max(0, number)
+
+def bounded_context(previous: str, role: str, output: str, limit: int) -> str:
+    """Carry a bounded tail of prior role output; limit 0 disables carry-over."""
+    if limit <= 0: return ""
+    combined = f"{previous}\n[{role}]\n{(output or '').strip()}"
+    return combined[-limit:]
+
+def write_report(report: dict) -> pathlib.Path:
+    """Write the orchestration report atomically with owner-only permissions."""
+    state = STATE_DIR / "orchestrations"
+    state.mkdir(parents=True, exist_ok=True)
+    path = state / f"{report['run_id']}.json"
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
+    with contextlib.suppress(OSError): tmp.chmod(0o600)
+    tmp.replace(path)
+    return path
 
 def run_role(name: str, task: str, base_prompt: str, context: str = "") -> tuple[int, str]:
     prior = f"\nPRIOR ROLE OUTPUT (untrusted context, verify before relying on it):\n{context}\n" if context else ""
@@ -30,7 +64,7 @@ Record evidence. Distinguish verified facts from assumptions. Do not claim compl
         [sys.executable, str(ROUTER), "route", "--task", task, "--prompt", prompt,
          "--max-models", os.getenv("ROLE_MAX_MODELS", "2"),
          "--timeout", os.getenv("TIMEOUT_SECONDS", "180")],
-        cwd=ROOT.parent, stdout=subprocess.PIPE, text=True,
+        cwd=ROOT, stdout=subprocess.PIPE, text=True, check=False,
     )
     sys.stdout.write(proc.stdout or ""); sys.stdout.flush()
     return proc.returncode, (proc.stdout or "")
@@ -39,13 +73,15 @@ def main() -> int:
     request = os.environ.get("PROMPT", "").strip()
     if not request:
         print("Set PROMPT='...'", file=sys.stderr); return 2
+    if not ROUTER.is_file():
+        print(f"Router not found: {ROUTER}", file=sys.stderr); return 2
     run_id = str(uuid.uuid4())
     report = {"run_id": run_id, "request": request, "started_at": datetime.datetime.now(datetime.timezone.utc).isoformat(), "roles": []}
     context = ""
+    limit = context_limit()
     for name, task, prompt in ROLES:
         code, out = run_role(name, task, prompt, context)
-        # Carry a bounded tail of this role's output into the next role.
-        context = (context + f"\n[{name}]\n" + out.strip())[-int(os.getenv("CONTEXT_CHARS", "6000")):]
+        context = bounded_context(context, name, out, limit)
         report["roles"].append({"role": name, "task": task, "exit_code": code})
         if code:
             report["status"] = "blocked"
@@ -53,10 +89,8 @@ def main() -> int:
     else:
         report["status"] = "review_required"
     report["finished_at"] = datetime.datetime.now(datetime.timezone.utc).isoformat()
-    state = ROOT / "state" / "orchestrations"
-    state.mkdir(parents=True, exist_ok=True)
-    (state / f"{run_id}.json").write_text(json.dumps(report, indent=2)+"\n", encoding="utf-8")
-    print(f"\nOrchestration status: {report['status']}; report: state/orchestrations/{run_id}.json")
+    path = write_report(report)
+    print(f"\nOrchestration status: {report['status']}; report: {path.relative_to(ROOT)}")
     return 0 if report["status"] == "review_required" else 1
 
 if __name__ == "__main__":
