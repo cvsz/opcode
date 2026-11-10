@@ -1,5 +1,11 @@
 .keys.env
-state/key-pools.json
-state/circuits.json
-state/events.jsonl
 state/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.superpowers/
+*.tmp
+.venv/
+# Local artifact of an already-applied commit; never commit it.
+0001-*.patch
