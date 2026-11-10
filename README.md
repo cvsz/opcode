@@ -131,3 +131,15 @@ Security boundaries:
 - The dashboard starts router jobs using argument arrays, never shell interpolation. It does not enable OpenCode `--auto`.
 - The dashboard is a local administrative surface, not a multi-user authenticated control plane. For remote access, put it behind an authenticated reverse proxy and restrict network access.
 - Job records are in-memory and disappear when the dashboard restarts; model attempt telemetry remains in `state/events.jsonl`.
+
+
+## Tuning knobs
+| Variable | Default | Effect |
+|---|---|---|
+| `ADAPTIVE_ORDER` | `0` | `1` reorders candidates by observed (smoothed) success rate |
+| `REQUIRE_ENV_KEY` | `0` | `1` skips providers that have no env key slot instead of using OpenCode's stored credentials |
+| `ROUTER_ARCHIVED` | `1` | pass `--archived` to `opencode run` when supported |
+| `CONTEXT_CHARS` | `6000` | prior-role output carried into the next orchestrator role |
+| `CIRCUIT_FAILURE_THRESHOLD`, `CIRCUIT_COOLDOWN_SECONDS`, `KEY_COOLDOWN_SECONDS` | `2`, `300`, `300` | breaker / key cooldown behaviour |
+
+`opencode-cli-export/` holds `--help` dumps of the installed OpenCode CLI, used as the reference for flags the router relies on.

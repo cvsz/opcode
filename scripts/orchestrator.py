@@ -14,12 +14,13 @@ ROLES = [
     ("security_reviewer", "review", "Perform an independent security review of the changes: trust boundaries, authn/authz, secrets, injection, unsafe deserialization, SSRF, path traversal, dependency and supply-chain risks. Do not modify files.")
 ]
 
-def run_role(name: str, task: str, base_prompt: str) -> int:
+def run_role(name: str, task: str, base_prompt: str, context: str = "") -> tuple[int, str]:
+    prior = f"\nPRIOR ROLE OUTPUT (untrusted context, verify before relying on it):\n{context}\n" if context else ""
     prompt = f"""ROLE: {name}
 PROJECT ROOT: {ROOT}
 USER REQUEST:
 {os.environ.get('PROMPT','')}
-
+{prior}
 INSTRUCTIONS:
 {base_prompt}
 
@@ -29,9 +30,10 @@ Record evidence. Distinguish verified facts from assumptions. Do not claim compl
         [sys.executable, str(ROUTER), "route", "--task", task, "--prompt", prompt,
          "--max-models", os.getenv("ROLE_MAX_MODELS", "2"),
          "--timeout", os.getenv("TIMEOUT_SECONDS", "180")],
-        cwd=ROOT.parent,
+        cwd=ROOT.parent, stdout=subprocess.PIPE, text=True,
     )
-    return proc.returncode
+    sys.stdout.write(proc.stdout or ""); sys.stdout.flush()
+    return proc.returncode, (proc.stdout or "")
 
 def main() -> int:
     request = os.environ.get("PROMPT", "").strip()
@@ -39,8 +41,11 @@ def main() -> int:
         print("Set PROMPT='...'", file=sys.stderr); return 2
     run_id = str(uuid.uuid4())
     report = {"run_id": run_id, "request": request, "started_at": datetime.datetime.now(datetime.timezone.utc).isoformat(), "roles": []}
+    context = ""
     for name, task, prompt in ROLES:
-        code = run_role(name, task, prompt)
+        code, out = run_role(name, task, prompt, context)
+        # Carry a bounded tail of this role's output into the next role.
+        context = (context + f"\n[{name}]\n" + out.strip())[-int(os.getenv("CONTEXT_CHARS", "6000")):]
         report["roles"].append({"role": name, "task": task, "exit_code": code})
         if code:
             report["status"] = "blocked"

@@ -41,7 +41,33 @@ def classify(text,code):
     for name,pat in rules:
       if re.search(pat,s): return name
     return "execution_error" if code else "success"
-def model_available(model,available): return model in available
+def model_available(model,available):
+    # Exact token match against `opencode models`; a `#variant` suffix is not part of the catalogue ID.
+    return model.split("#",1)[0] in set(available.split())
+_FLAGS={}
+def supports_flag(sub_cmd,flag):
+    key=(sub_cmd,flag)
+    if key not in _FLAGS:
+        try:
+            p=subprocess.run([OPENCODE,sub_cmd,"--help"],capture_output=True,text=True,timeout=20)
+            _FLAGS[key]=flag in (p.stdout+p.stderr)
+        except (OSError,subprocess.SubprocessError): _FLAGS[key]=False
+    return _FLAGS[key]
+def smoothed_rates():
+    """Laplace-smoothed success rate per model from telemetry (new models start at 0.5)."""
+    stats={}
+    try: lines=(STATE/"events.jsonl").read_text(encoding="utf-8").splitlines()
+    except OSError: return {}
+    for line in lines:
+        try: e=json.loads(line)
+        except json.JSONDecodeError: continue
+        if e.get("status") not in ("success","failure") or not e.get("model"): continue
+        s=stats.setdefault(e["model"],[0,0]); s[1]+=1; s[0]+=e["status"]=="success"
+    return {m:(ok+1)/(n+2) for m,(ok,n) in stats.items()}
+def adaptive_order(models):
+    if os.getenv("ADAPTIVE_ORDER","0")!="1": return models
+    rates=smoothed_rates()
+    return sorted(models,key=lambda m:-rates.get(m,0.5))  # stable: ties keep configured order
 def task_models(task):
     if task not in TASKS: raise ValueError(f"Unsupported task: {task}")
     return [x.strip() for x in (CONFIG/f"{task}.txt").read_text().splitlines()
@@ -109,6 +135,7 @@ def route(args):
     available=get_available()
     candidates=[args.model] if args.model else task_models(args.task)
     candidates=[m for m in candidates if model_available(m,available) and not circuit_is_open(m)]
+    if not args.model: candidates=adaptive_order(candidates)
     if args.max_models>0: candidates=candidates[:args.max_models]
     if not candidates: print("No eligible models. Check catalogue/circuit state.",file=sys.stderr); return 3
     if args.dry_run:
@@ -118,6 +145,9 @@ def route(args):
     for model in candidates:
       provider=model.split("/",1)[0]
       keys=key_candidates(provider)
+      if not keys and os.getenv("REQUIRE_ENV_KEY","0")!="1":
+        # No env keys: use credentials stored by `opencode auth login` (or key-less free models).
+        keys=[{"slot":0,"env_name":None,"secret":None,"auth_env":None}]
       if not keys:
         print(f"[router] no API key configured for provider={provider}; skipping {model}",file=sys.stderr)
         emit({"task_id":task_id,"task":args.task,"model":model,"status":"skipped","error_category":"missing_credentials"})
@@ -130,7 +160,9 @@ def route(args):
         print(f"[router] model={model} provider={provider} key_slot={key['slot']}",file=sys.stderr)
         start=time.monotonic()
         try:
-          proc=subprocess.run([OPENCODE,"run","--model",model,args.prompt],
+          cmd=[OPENCODE,"run","--model",model]
+          if os.getenv("ROUTER_ARCHIVED","1")=="1" and supports_flag("run","--archived"): cmd.append("--archived")
+          proc=subprocess.run(cmd+[args.prompt],
               capture_output=True,text=True,env=env,
               timeout=args.timeout if args.timeout>0 else None,check=False)
           output=(proc.stdout or "")+"\n"+(proc.stderr or ""); code=proc.returncode
@@ -177,12 +209,12 @@ def main():
       avail=get_available(); reg=[x.strip() for x in (CONFIG/"free-models.txt").read_text().splitlines() if x.strip() and not x.startswith("#")]
       found=0
       for m in reg:
-        ok=m in avail; found+=int(ok); print(f"[{'AVAILABLE' if ok else 'MISSING'}] {m}")
+        ok=model_available(m,avail); found+=int(ok); print(f"[{'AVAILABLE' if ok else 'MISSING'}] {m}")
       print(f"{found}/{len(reg)} found"); return 0
     if a.cmd=="plan":
       avail=get_available()
       for m in task_models(a.task):
-        status="CIRCUIT_OPEN" if circuit_is_open(m) else ("READY" if m in avail else "NOT_LISTED")
+        status="CIRCUIT_OPEN" if circuit_is_open(m) else ("READY" if model_available(m,avail) else "NOT_LISTED")
         print(f"[{status}] {m}")
       return 0
     if a.cmd=="route":

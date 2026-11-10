@@ -24,13 +24,14 @@ for line in EVENTS.read_text(encoding="utf-8").splitlines():
 rows = []
 for model, item in stats.items():
     rate = item["success"] / item["runs"]
+    smooth = (item["success"] + 1) / (item["runs"] + 2)  # Laplace: 1/1 does not outrank 48/50
     latency = statistics.mean(item["latencies"]) if item["latencies"] else float("inf")
     # Reliability dominates; latency is a tie-breaker. Low sample counts are visible.
-    score = rate * 100 - min(latency, 120) * 0.1
+    score = smooth * 100 - min(latency, 120) * 0.1
     rows.append((score, model, item, rate, latency))
 rows.sort(reverse=True)
 print(f"{'SCORE':>7} {'SUCCESS':>9} {'RUNS':>5} {'AVG_SEC':>8} MODEL")
 for score, model, item, rate, latency in rows:
     avg = f"{latency:.2f}" if latency != float("inf") else "n/a"
-    print(f"{score:7.2f} {rate:8.1%} {item['runs']:5d} {avg:>8} {model}")
+    print(f"{score:7.2f} {rate:8.1%} {item['runs']:5d} {avg:>8} {model}{'  (low sample)' if item['runs'] < 5 else ''}")
 print("\nNote: ranking is observational, task-mix dependent, and not a guarantee of future performance.")

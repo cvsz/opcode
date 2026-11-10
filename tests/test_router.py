@@ -59,4 +59,67 @@ class RouterTests(unittest.TestCase):
                 router.CONFIG,router.STATE=old_c,old_s
                 os.environ.pop("P_K1",None); os.environ.pop("P_K2",None)
 
+    def test_model_match_is_exact_and_ignores_variant(self):
+        avail="openrouter/free\nopenrouter/openrouter/free\n"
+        self.assertTrue(router.model_available("openrouter/free",avail))
+        self.assertFalse(router.model_available("router/free",avail))   # substring must not match
+        self.assertTrue(router.model_available("openrouter/free#high",avail))
+    def test_adaptive_order_prefers_reliable_models(self):
+        with tempfile.TemporaryDirectory() as td:
+            old=router.STATE; router.STATE=pathlib.Path(td)
+            ev=[{"model":"a/x","status":"failure"}]*3+[{"model":"b/y","status":"success"}]*3
+            (router.STATE/"events.jsonl").write_text("\n".join(json.dumps(e) for e in ev))
+            os.environ["ADAPTIVE_ORDER"]="1"
+            try: self.assertEqual(router.adaptive_order(["a/x","c/new","b/y"]),["b/y","c/new","a/x"])
+            finally: router.STATE=old; os.environ.pop("ADAPTIVE_ORDER",None)
+    def test_adaptive_order_off_by_default(self):
+        self.assertEqual(router.adaptive_order(["a","b"]),["a","b"])
+
+@unittest.skipIf(os.name=="nt","needs a POSIX shell")
+class RouteIntegration(unittest.TestCase):
+    """Runs the real route() against a fake `opencode` executable."""
+    def setUp(self):
+        self.td=tempfile.TemporaryDirectory(); d=pathlib.Path(self.td.name)
+        fake=d/"opencode"
+        fake.write_text("#!/bin/bash\n"
+          'case "$1" in models) echo prov/m1; echo prov/m2;;\n'
+          '  run) [ "$2" = "--help" ] && { echo "--archived"; exit 0; }\n'
+          '       [ "$OPENROUTER_API_KEY" = "good" ] && { echo "ok $*"; exit 0; }\n'
+          '       echo "401 invalid api key" >&2; exit 1;;\n'
+          'esac\n')
+        fake.chmod(0o755)
+        (d/"cfg").mkdir(); (d/"state").mkdir()
+        (d/"cfg"/"providers.json").write_text(json.dumps({"providers":{"openrouter":{"auth_env":"OPENROUTER_API_KEY","key_slots":["T_K1","T_K2"]}}}))
+        (d/"cfg"/"code.txt").write_text("openrouter/m1\n")
+        self.old=(router.OPENCODE,router.CONFIG,router.STATE); router.OPENCODE=str(fake)
+        router.CONFIG=d/"cfg"; router.STATE=d/"state"; router._FLAGS.clear()
+        os.environ.update(T_K1="bad",T_K2="good")
+        (d/"cfg"/"x").write_text("")
+        self.fake_models=d
+        # catalogue must contain the model under test
+        fake.write_text(fake.read_text().replace("prov/m1","openrouter/m1"))
+    def tearDown(self):
+        router.OPENCODE,router.CONFIG,router.STATE=self.old
+        os.environ.pop("T_K1",None); os.environ.pop("T_K2",None); self.td.cleanup()
+    def args(self,**kw):
+        import argparse
+        return argparse.Namespace(task="code",prompt="hi",model="",dry_run=False,max_models=0,timeout=10,**kw)
+    def test_auth_failure_rotates_to_next_key_and_uses_archived(self):
+        import io,contextlib
+        out=io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual(router.route(self.args()),0)
+        self.assertIn("--archived",out.getvalue())
+        pool=json.loads((router.STATE/"key-pools.json").read_text())["openrouter"]
+        self.assertEqual(pool["current_slot"],2); self.assertIn("1",pool["cooldowns"])
+        self.assertNotIn("good",(router.STATE/"key-pools.json").read_text())
+        self.assertNotIn("good",(router.STATE/"events.jsonl").read_text())
+    def test_no_env_keys_falls_back_to_stored_credentials(self):
+        import io,contextlib
+        os.environ.pop("T_K1"); os.environ.pop("T_K2")
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            router.route(self.args())      # fake CLI fails auth, but it must have been ATTEMPTED
+        ev=[json.loads(l) for l in (router.STATE/"events.jsonl").read_text().splitlines()]
+        self.assertEqual(ev[0]["status"],"failure"); self.assertEqual(ev[0]["key_slot"],0)
+
 if __name__=="__main__": unittest.main()

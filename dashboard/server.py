@@ -3,6 +3,8 @@ from __future__ import annotations
 import argparse,datetime as dt,http.server,json,os,pathlib,subprocess,threading,urllib.parse,uuid
 ROOT=pathlib.Path(__file__).resolve().parents[1]; CONFIG=ROOT/'config'; STATE=ROOT/'state'
 TASKS={'code','review','fast','vision','general'}; JOBS={}; LOCK=threading.Lock(); HTML_PATH=pathlib.Path(__file__).with_name('index.html')
+def atomic_write(p,text):
+ tmp=p.with_name(p.name+'.tmp');tmp.write_text(text,encoding='utf-8');tmp.replace(p)
 def load(p,d):
  try:return json.loads(p.read_text(encoding='utf-8'))
  except (OSError,json.JSONDecodeError):return d
@@ -97,9 +99,9 @@ class H(http.server.BaseHTTPRequestHandler):
     for m in ms:
      if not isinstance(m,str) or not m.strip() or len(m)>200 or any(c.isspace() for c in m):raise ValueError('Invalid model ID')
      if m not in clean:clean.append(m)
-    (CONFIG/(t+'.txt')).write_text('\n'.join(clean)+('\n' if clean else ''),encoding='utf-8');self.sendj({'saved':True})
+    atomic_write(CONFIG/(t+'.txt'),'\n'.join(clean)+('\n' if clean else ''));self.sendj({'saved':True})
    elif path in ('/api/reset-circuits','/api/reset-keys'):
-    f=STATE/('circuits.json' if path.endswith('circuits') else 'key-pools.json');STATE.mkdir(exist_ok=True);f.write_text('{}\n');self.sendj({'message':'State reset'})
+    f=STATE/('circuits.json' if path.endswith('circuits') else 'key-pools.json');STATE.mkdir(exist_ok=True);atomic_write(f,'{}\n');self.sendj({'message':'State reset'})
    else:self.send_error(404)
   except Exception as e:self.sendj({'error':str(e)},400)
  def log_message(self,fmt,*args):print('[dashboard] '+fmt%args)
