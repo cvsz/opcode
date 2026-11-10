@@ -1,0 +1,5 @@
+# Ordered candidates; one model ID per line.
+opencode/longcat-2.5-free
+opencode/glm-5.3-flash-free
+opencode/beam-free
+openrouter/meta-llama-3.3-70b-free

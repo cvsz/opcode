@@ -1,0 +1,5 @@
+# Ordered candidates; one model ID per line.
+opencode/minimax-m3.1-flash-free
+opencode/inkling-2-small-free
+opencode/deepseek-v4.1-flash-free
+kilo/nvidia/nemotron-3.5-lightning:free

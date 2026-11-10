@@ -1,0 +1,5 @@
+.keys.env
+state/key-pools.json
+state/circuits.json
+state/events.jsonl
+state/

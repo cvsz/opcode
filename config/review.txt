@@ -1,0 +1,6 @@
+# Ordered candidates; one model ID per line.
+opencode/beam-free
+opencode/mimo-v2.6-flash-free
+opencode/glm-5.3-flash-free
+openrouter/deepseek-r1-free
+openrouter/meta-llama-3.3-70b-free

@@ -1,0 +1,5 @@
+# Ordered candidates; one model ID per line.
+opencode/nemotron-3.5-super-vl-free
+kilo/nvidia/nemotron-3.5-super-vl:free
+openrouter/nvidia/nemotron-3.5-super-vl:free
+openrouter/google/gemma-4-31b-it:free

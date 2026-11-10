@@ -1,0 +1,49 @@
+opencode
+upgrade
+update
+uninstall
+acp
+api
+debug
+debug agents
+debug config
+debug heap-dump
+debug paths
+auth
+auth list
+auth login
+auth logout
+auth export
+auth import
+auth switch
+mcp
+mcp list
+mcp add
+mcp auth
+mcp logout
+plugin
+plugin list
+plugin add
+plugin check
+plugin update
+plugin remove
+models
+stats
+mini
+run
+session
+session list
+session delete
+session export
+session import
+service
+service start
+service restart
+service status
+service stop
+service get
+service set
+service unset
+reload
+pair
+serve

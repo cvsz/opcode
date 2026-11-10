@@ -1,0 +1,18 @@
+debug heap-dump
+DESCRIPTION
+  Write a heap snapshot of the running server and print its path
+
+USAGE
+  opencode debug heap-dump [flags]
+
+FLAGS
+  --directory string    Directory to write the snapshot into instead of the server's log directory
+
+GLOBAL FLAGS
+  --help, -h                                                          Show help information
+  --version, -v                                                       Show version information
+  --wizard                                                            Start wizard mode for a command
+  --completions <bash|zsh|fish|powershell|sh|pwsh>                    Print shell completion script (choices: bash, zsh, fish, powershell, sh, pwsh)
+  --log-level <all|trace|debug|info|warn|warning|error|fatal|none>    Sets the minimum log level (choices: all, trace, debug, info, warn, warning, error, fatal, none)
+  --print-logs                                                        Print logs to stderr (server logs require --standalone)
+  --server string                                                     Connect to a server URL instead of the background service
