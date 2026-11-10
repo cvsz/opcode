@@ -1,4 +1,12 @@
-import importlib.util, os, pathlib, tempfile, unittest, json
+import argparse
+import importlib.util
+import json
+import os
+import pathlib
+import tempfile
+import unittest
+import uuid
+
 ROOT=pathlib.Path(__file__).resolve().parents[1]
 spec=importlib.util.spec_from_file_location("router",ROOT/"scripts/router.py")
 router=importlib.util.module_from_spec(spec); spec.loader.exec_module(router)
@@ -75,6 +83,75 @@ class RouterTests(unittest.TestCase):
     def test_adaptive_order_off_by_default(self):
         self.assertEqual(router.adaptive_order(["a","b"]),["a","b"])
 
+    def test_success_output_with_error_words_is_success(self):
+        # A model answer may discuss rate limits or 502s; exit code decides success.
+        self.assertEqual(router.classify("the log says 429 rate limit and 502 bad gateway",0),"success")
+
+    def test_emitted_event_has_event_id(self):
+        with tempfile.TemporaryDirectory() as td:
+            old=router.STATE; router.STATE=pathlib.Path(td)
+            try:
+                router.emit({"model":"m","status":"success"})
+                event=json.loads((router.STATE/"events.jsonl").read_text().splitlines()[0])
+                self.assertEqual(str(uuid.UUID(event["event_id"])),event["event_id"])
+            finally: router.STATE=old
+
+    def test_corrupt_circuit_state_is_tolerated(self):
+        with tempfile.TemporaryDirectory() as td:
+            old_state,old_thr=router.STATE,router.FAIL_THRESHOLD
+            router.STATE=pathlib.Path(td); router.FAIL_THRESHOLD=1
+            (router.STATE/"circuits.json").write_text("[]",encoding="utf-8")
+            try:
+                self.assertFalse(router.circuit_is_open("m"))
+                router.circuit_update("m","rate_limited",False)
+                self.assertTrue(router.circuit_is_open("m"))
+            finally: router.STATE,router.FAIL_THRESHOLD=old_state,old_thr
+
+    def test_corrupt_key_pool_state_is_tolerated(self):
+        with tempfile.TemporaryDirectory() as td:
+            old_c,old_s=router.CONFIG,router.STATE
+            router.CONFIG=pathlib.Path(td); router.STATE=pathlib.Path(td)
+            (router.CONFIG/"providers.json").write_text(json.dumps({"providers":{"p":{"auth_env":"P_KEY","key_slots":["P_K1"]}}}))
+            (router.STATE/"key-pools.json").write_text("[]",encoding="utf-8")
+            os.environ["P_K1"]="a"
+            try:
+                self.assertEqual([x["slot"] for x in router.key_candidates("p")],[1])
+                router.key_mark("p",1,"success")
+            finally:
+                router.CONFIG,router.STATE=old_c,old_s
+                os.environ.pop("P_K1",None)
+
+    def test_route_rejects_negative_limits(self):
+        old=router.OPENCODE; router.OPENCODE="/nonexistent-opencode"
+        try:
+            with self.assertRaises(ValueError):
+                router.route(argparse.Namespace(task="code",prompt="x",model="",dry_run=False,max_models=-1,timeout=10))
+        finally: router.OPENCODE=old
+
+    @unittest.skipIf(os.name=="nt","needs a POSIX shell")
+    def test_get_available_times_out(self):
+        with tempfile.TemporaryDirectory() as td:
+            fake=pathlib.Path(td)/"opencode"
+            fake.write_text("#!/bin/bash\nsleep 2\necho prov/m1\n"); fake.chmod(0o755)
+            old=router.OPENCODE; router.OPENCODE=str(fake)
+            os.environ["OPENCODE_QUERY_TIMEOUT"]="0.1"
+            try:
+                with self.assertRaises(RuntimeError): router.get_available()
+            finally:
+                router.OPENCODE=old; os.environ.pop("OPENCODE_QUERY_TIMEOUT",None)
+
+    @unittest.skipIf(os.name=="nt","needs a POSIX shell")
+    def test_supports_flag_times_out_false(self):
+        with tempfile.TemporaryDirectory() as td:
+            fake=pathlib.Path(td)/"opencode"
+            fake.write_text("#!/bin/bash\nsleep 2\necho --archived\n"); fake.chmod(0o755)
+            old=router.OPENCODE; router.OPENCODE=str(fake); router._FLAGS.clear()
+            os.environ["OPENCODE_QUERY_TIMEOUT"]="0.1"
+            try:
+                self.assertFalse(router.supports_flag("run","--archived"))
+            finally:
+                router.OPENCODE=old; router._FLAGS.clear(); os.environ.pop("OPENCODE_QUERY_TIMEOUT",None)
+
 @unittest.skipIf(os.name=="nt","needs a POSIX shell")
 class RouteIntegration(unittest.TestCase):
     """Runs the real route() against a fake `opencode` executable."""
@@ -105,7 +182,8 @@ class RouteIntegration(unittest.TestCase):
         import argparse
         return argparse.Namespace(task="code",prompt="hi",model="",dry_run=False,max_models=0,timeout=10,**kw)
     def test_auth_failure_rotates_to_next_key_and_uses_archived(self):
-        import io,contextlib
+        import contextlib
+        import io
         out=io.StringIO()
         with contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()):
             self.assertEqual(router.route(self.args()),0)
@@ -115,7 +193,8 @@ class RouteIntegration(unittest.TestCase):
         self.assertNotIn("good",(router.STATE/"key-pools.json").read_text())
         self.assertNotIn("good",(router.STATE/"events.jsonl").read_text())
     def test_no_env_keys_falls_back_to_stored_credentials(self):
-        import io,contextlib
+        import contextlib
+        import io
         os.environ.pop("T_K1"); os.environ.pop("T_K2")
         with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
             router.route(self.args())      # fake CLI fails auth, but it must have been ATTEMPTED

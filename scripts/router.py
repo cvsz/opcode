@@ -1,36 +1,58 @@
 #!/usr/bin/env python3
 """OpenCode router with provider-scoped multi-API-key rotation and circuit breakers."""
 from __future__ import annotations
-import argparse, datetime as dt, json, os, pathlib, re, subprocess, sys, time, uuid
-from typing import Any
+
+import argparse
+import contextlib
+import datetime as dt
+import json
+import os
+import pathlib
+import re
+import subprocess
+import sys
+import time
+import uuid
 
 ROOT=pathlib.Path(__file__).resolve().parents[1]
 CONFIG=ROOT/"config"; STATE=ROOT/"state"
 TASKS={"code","review","fast","vision","general"}
 OPENCODE=os.getenv("OPENCODE","opencode")
-FAIL_THRESHOLD=int(os.getenv("CIRCUIT_FAILURE_THRESHOLD","2"))
-COOLDOWN=int(os.getenv("CIRCUIT_COOLDOWN_SECONDS","300"))
-KEY_COOLDOWN=int(os.getenv("KEY_COOLDOWN_SECONDS","300"))
+
+def _int_env(name,default):
+    try: value=int(os.getenv(name,str(default)))
+    except (TypeError,ValueError): return default
+    return value
+
+FAIL_THRESHOLD=max(1,_int_env("CIRCUIT_FAILURE_THRESHOLD",2))
+COOLDOWN=max(0,_int_env("CIRCUIT_COOLDOWN_SECONDS",300))
+KEY_COOLDOWN=max(0,_int_env("KEY_COOLDOWN_SECONDS",300))
 
 def utcnow(): return dt.datetime.now(dt.timezone.utc)
 def iso(): return utcnow().isoformat()
 def load(path,default):
-    try: return json.loads(path.read_text(encoding="utf-8"))
-    except (OSError,json.JSONDecodeError): return default
+    """Load JSON, returning default when missing, invalid, or the wrong shape."""
+    try: value=json.loads(path.read_text(encoding="utf-8"))
+    except (OSError,json.JSONDecodeError,UnicodeDecodeError): return default
+    return value if isinstance(value,type(default)) else default
 def atomic(path,data):
     path.parent.mkdir(parents=True,exist_ok=True); tmp=path.with_suffix(path.suffix+".tmp")
     tmp.write_text(json.dumps(data,indent=2)+"\n",encoding="utf-8")
-    try: tmp.chmod(0o600)
-    except OSError: pass
+    with contextlib.suppress(OSError): tmp.chmod(0o600)
     tmp.replace(path)
 def emit(obj):
     STATE.mkdir(parents=True,exist_ok=True)
+    obj=dict(obj)
+    obj.setdefault("event_id",str(uuid.uuid4()))
     obj["timestamp"]=iso()
     with (STATE/"events.jsonl").open("a",encoding="utf-8") as f:
         f.write(json.dumps(obj,separators=(",",":"))+"\n")
 def config(): return json.loads((CONFIG/"providers.json").read_text(encoding="utf-8"))
 def classify(text,code):
-    s=text.lower()
+    """Classify a failed attempt. Exit code 0 is always success, even when the
+    model's answer text happens to mention quota/rate-limit/outage wording."""
+    if not code: return "success"
+    s=(text or "").lower()
     rules=[
       ("quota_exhausted",r"insufficient_quota|quota_exceeded|billing|credits exhausted|usage limit|resource_exhausted"),
       ("rate_limited",r"rate.?limit|too many requests|\b429\b|throttl"),
@@ -40,27 +62,40 @@ def classify(text,code):
     ]
     for name,pat in rules:
       if re.search(pat,s): return name
-    return "execution_error" if code else "success"
+    return "execution_error"
 def model_available(model,available):
     # Exact token match against `opencode models`; a `#variant` suffix is not part of the catalogue ID.
-    return model.split("#",1)[0] in set(available.split())
+    return model.split("#",1)[0] in set(str(available).split())
+def query_timeout():
+    try: value=float(os.getenv("OPENCODE_QUERY_TIMEOUT","30"))
+    except (TypeError,ValueError): return 30.0
+    return value if value>0 else 30.0
+def _opencode(args,env=None):
+    """Run a short catalogue/help query. Raises RuntimeError on timeout."""
+    timeout=query_timeout()
+    try:
+        return subprocess.run([OPENCODE,*args],capture_output=True,text=True,
+                              env=env,timeout=timeout,check=False)
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError(f"opencode {' '.join(args)} timed out after {timeout:g}s") from exc
 _FLAGS={}
 def supports_flag(sub_cmd,flag):
     key=(sub_cmd,flag)
     if key not in _FLAGS:
         try:
-            p=subprocess.run([OPENCODE,sub_cmd,"--help"],capture_output=True,text=True,timeout=20)
+            p=_opencode([sub_cmd,"--help"])
             _FLAGS[key]=flag in (p.stdout+p.stderr)
-        except (OSError,subprocess.SubprocessError): _FLAGS[key]=False
+        except (OSError,subprocess.SubprocessError,RuntimeError): _FLAGS[key]=False
     return _FLAGS[key]
 def smoothed_rates():
     """Laplace-smoothed success rate per model from telemetry (new models start at 0.5)."""
     stats={}
     try: lines=(STATE/"events.jsonl").read_text(encoding="utf-8").splitlines()
-    except OSError: return {}
+    except (OSError,UnicodeDecodeError): return {}
     for line in lines:
         try: e=json.loads(line)
         except json.JSONDecodeError: continue
+        if not isinstance(e,dict): continue
         if e.get("status") not in ("success","failure") or not e.get("model"): continue
         s=stats.setdefault(e["model"],[0,0]); s[1]+=1; s[0]+=e["status"]=="success"
     return {m:(ok+1)/(n+2) for m,(ok,n) in stats.items()}
@@ -73,23 +108,28 @@ def task_models(task):
     return [x.strip() for x in (CONFIG/f"{task}.txt").read_text().splitlines()
             if x.strip() and not x.lstrip().startswith("#")]
 def get_available():
-    p=subprocess.run([OPENCODE,"models"],capture_output=True,text=True)
+    try: p=_opencode(["models"])
+    except OSError as exc: raise RuntimeError(f"cannot run {OPENCODE}: {exc}") from exc
     if p.returncode: raise RuntimeError(f"opencode models failed: {p.stderr.strip()}")
     return p.stdout+"\n"+p.stderr
 def state_json(name,default): return load(STATE/name,default)
 def circuit_is_open(model):
-    item=state_json("circuits.json",{}).get(model,{})
+    state=state_json("circuits.json",{})
+    item=state.get(model,{})
+    if not isinstance(item,dict): return False
     until=item.get("open_until")
     if not until: return False
     try: return dt.datetime.fromisoformat(until)>utcnow()
-    except ValueError: return False
+    except (ValueError,TypeError): return False
 def circuit_update(model,category,success):
     path=STATE/"circuits.json"; state=load(path,{})
-    item=state.setdefault(model,{"failures":0,"successes":0})
+    item=state.get(model)
+    if not isinstance(item,dict):
+        item={"failures":0,"successes":0}; state[model]=item
     if success:
-      item["successes"]+=1; item["failures"]=0; item.pop("open_until",None); item["last_error"]=None
+      item["successes"]=item.get("successes",0)+1; item["failures"]=0; item.pop("open_until",None); item["last_error"]=None
     else:
-      item["failures"]+=1; item["last_error"]=category
+      item["failures"]=item.get("failures",0)+1; item["last_error"]=category
       threshold=1 if category in {"authentication","model_unavailable"} else FAIL_THRESHOLD
       if item["failures"]>=threshold:
         item["open_until"]=(utcnow()+dt.timedelta(seconds=COOLDOWN)).isoformat()
@@ -99,7 +139,10 @@ def key_candidates(provider):
     cfg=config()["providers"].get(provider)
     if not cfg: return [{"slot":0,"env_name":None,"secret":None,"auth_env":None}]
     auth_env=cfg["auth_env"]; state=load(STATE/"key-pools.json",{}).get(provider,{})
-    cooldowns=state.get("cooldowns",{}); items=[]
+    if not isinstance(state,dict): state={}
+    cooldowns=state.get("cooldowns",{})
+    if not isinstance(cooldowns,dict): cooldowns={}
+    items=[]
     for slot,env_name in enumerate(cfg.get("key_slots",[]),1):
       secret=os.getenv(env_name,"").strip()
       if not secret: continue
@@ -107,7 +150,7 @@ def key_candidates(provider):
       if until:
         try:
           if dt.datetime.fromisoformat(until)>utcnow(): continue
-        except ValueError: pass
+        except (ValueError,TypeError): pass
       items.append({"slot":slot,"env_name":env_name,"secret":secret,"auth_env":auth_env})
     current=state.get("current_slot")
     items.sort(key=lambda x:(x["slot"]!=current,x["slot"]))
@@ -120,18 +163,25 @@ def key_candidates(provider):
 def key_mark(provider,slot,outcome):
     if slot==0: return
     path=STATE/"key-pools.json"; state=load(path,{})
-    p=state.setdefault(provider,{"current_slot":slot,"cooldowns":{},"stats":{}})
+    p=state.get(provider)
+    if not isinstance(p,dict): p={"current_slot":slot,"cooldowns":{},"stats":{}}; state[provider]=p
     p["current_slot"]=slot
-    stats=p.setdefault("stats",{}).setdefault(str(slot),{"success":0,"failure":0})
+    cooldowns=p.get("cooldowns")
+    if not isinstance(cooldowns,dict): cooldowns={}; p["cooldowns"]=cooldowns
+    stats=p.get("stats")
+    if not isinstance(stats,dict): stats={}; p["stats"]=stats
+    slot_stats=stats.get(str(slot))
+    if not isinstance(slot_stats,dict): slot_stats={"success":0,"failure":0}; stats[str(slot)]=slot_stats
     if outcome=="success":
-      stats["success"]+=1; p.setdefault("cooldowns",{}).pop(str(slot),None)
+      slot_stats["success"]=slot_stats.get("success",0)+1; cooldowns.pop(str(slot),None)
     else:
-      stats["failure"]+=1
-      p.setdefault("cooldowns",{})[str(slot)]=(utcnow()+dt.timedelta(seconds=KEY_COOLDOWN)).isoformat()
+      slot_stats["failure"]=slot_stats.get("failure",0)+1
+      cooldowns[str(slot)]=(utcnow()+dt.timedelta(seconds=KEY_COOLDOWN)).isoformat()
     atomic(path,state)
 
 def route(args):
-    if not args.prompt.strip(): raise ValueError("PROMPT is required")
+    if args.max_models<0 or args.timeout<0: raise ValueError("limits must be non-negative")
+    if not isinstance(args.prompt,str) or not args.prompt.strip(): raise ValueError("PROMPT is required")
     available=get_available()
     candidates=[args.model] if args.model else task_models(args.task)
     candidates=[m for m in candidates if model_available(m,available) and not circuit_is_open(m)]
@@ -172,7 +222,7 @@ def route(args):
         category=classify(output,code); success=code==0
         circuit_update(model,category,success)
         if key["slot"]>0:
-          # Rotate on provider/key-scoped transient/auth/quota errors only.
+          # Rotate on authentication errors only.
           if success: key_mark(provider,key["slot"],"success")
           elif category == "authentication":
             # Rotate only for invalid/expired credentials. Quota and rate-limit
@@ -186,7 +236,7 @@ def route(args):
           if proc.stderr: sys.stderr.write(proc.stderr)
           print(f"\n[router] success model={model} latency={duration}s",file=sys.stderr)
           return 0
-        # Key-level retry only when classification suggests credential/quota/provider problem.
+        # Key-level retry only when classification suggests credential problem.
         # If model-specific error, stop cycling keys and continue next model.
         if category != "authentication":
           break
@@ -228,4 +278,4 @@ def main():
 if __name__=="__main__":
     try: raise SystemExit(main())
     except (OSError,ValueError,RuntimeError,KeyError,json.JSONDecodeError) as e:
-      print(f"ERROR: {e}",file=sys.stderr); raise SystemExit(2)
+      print(f"ERROR: {e}",file=sys.stderr); raise SystemExit(2) from e
