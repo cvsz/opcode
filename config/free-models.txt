@@ -38,3 +38,4 @@ zeaz/zeaz-free
 kilo/kilo-auto/free
 kilo/openrouter/free
 openrouter/openrouter/free
+openrouter/gemini-2.0-flash-exp-free

@@ -1,4 +1,5 @@
 import argparse
+import datetime as dt
 import importlib.util
 import json
 import os
@@ -152,6 +153,28 @@ class RouterTests(unittest.TestCase):
             finally:
                 router.OPENCODE=old; router._FLAGS.clear(); os.environ.pop("OPENCODE_QUERY_TIMEOUT",None)
 
+    # --- fixtures captured from real opencode v2.2.7 runs (WSL, 2026-11-11) ---
+    def test_real_error_insufficient_balance(self):
+        self.assertEqual(router.classify("Error: Insufficient balance. Top up at https://opencode.ai/console/org_x/billing?credits=1.",1),"quota_exhausted")
+    def test_real_error_prepaid_credits(self):
+        self.assertEqual(router.classify("Error: Purchase pre-paid credits to continue using Inference Providers. Alternatively, subscribe to PRO",1),"quota_exhausted")
+    def test_real_error_no_credentials(self):
+        self.assertEqual(router.classify("> build · qwen-2.5-coder-32b-free\nError: No cookie auth credentials found",1),"authentication")
+    def test_timeout_has_own_category_and_ignores_prompt_text(self):
+        self.assertEqual(router.classify("timed out after 180s",124),"timeout")
+        self.assertEqual(router.classify("anything about authentication and billing in the prompt",124),"timeout")
+    def test_last_line_redacts_secret_and_truncates(self):
+        self.assertEqual(router.last_line("x\nbad key sk-123 here\n","sk-123"),"bad key *** here")
+        self.assertEqual(len(router.last_line("a"*999)),200)
+    def test_quota_opens_circuit_with_long_cooldown(self):
+        with tempfile.TemporaryDirectory() as td:
+            old=router.STATE; router.STATE=pathlib.Path(td)
+            try:
+                router.circuit_update("p/m","quota_exhausted",False)
+                until=dt.datetime.fromisoformat(json.loads((router.STATE/"circuits.json").read_text())["p/m"]["open_until"])
+                self.assertGreater((until-router.utcnow()).total_seconds(),router.COOLDOWN+60)
+            finally: router.STATE=old
+
 @unittest.skipIf(os.name=="nt","needs a POSIX shell")
 class RouteIntegration(unittest.TestCase):
     """Runs the real route() against a fake `opencode` executable."""
@@ -184,14 +207,23 @@ class RouteIntegration(unittest.TestCase):
     def test_auth_failure_rotates_to_next_key_and_uses_archived(self):
         import contextlib
         import io
-        out=io.StringIO()
-        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()):
+        out,err=io.StringIO(),io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
             self.assertEqual(router.route(self.args()),0)
         self.assertIn("--archived",out.getvalue())
+        self.assertNotIn("--auto",out.getvalue())            # off unless requested
+        self.assertIn("FAILED model=openrouter/m1 slot=1 category=authentication",err.getvalue())
         pool=json.loads((router.STATE/"key-pools.json").read_text())["openrouter"]
         self.assertEqual(pool["current_slot"],2); self.assertIn("1",pool["cooldowns"])
         self.assertNotIn("good",(router.STATE/"key-pools.json").read_text())
         self.assertNotIn("good",(router.STATE/"events.jsonl").read_text())
+    def test_auto_flag_is_passed_only_when_requested(self):
+        import contextlib
+        import io
+        out=io.StringIO(); a=self.args(); a.auto=True
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()):
+            router.route(a)
+        self.assertIn("--auto",out.getvalue())
     def test_no_env_keys_falls_back_to_stored_credentials(self):
         import contextlib
         import io

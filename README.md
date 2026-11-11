@@ -139,6 +139,10 @@ Security boundaries:
 | `ADAPTIVE_ORDER` | `0` | `1` reorders candidates by observed (smoothed) success rate |
 | `REQUIRE_ENV_KEY` | `0` | `1` skips providers that have no env key slot instead of using OpenCode's stored credentials |
 | `ROUTER_ARCHIVED` | `1` | pass `--archived` to `opencode run` when supported |
+| `ROUTER_AUTO` | `0` | `1` passes `--auto` (auto-approve permissions) to `opencode run`. Non-interactive runs cannot answer permission prompts, so file-editing roles may need it; keep off for untrusted prompts |
+| `ROLE_AUTO` | empty | comma list of orchestrator roles run with `--auto`, e.g. `coder,tester` |
+| `ROLE_TIMEOUT_<ROLE>` | planner 180, coder 900, reviewer 300, tester 600, security_reviewer 300 | per-role timeout seconds (`TIMEOUT_SECONDS`, if set, applies to all roles) |
+| `CIRCUIT_QUOTA_COOLDOWN_SECONDS` | `3600` | how long a model stays blocked after an out-of-credits error |
 | `CONTEXT_CHARS` | `6000` | prior-role output carried into the next orchestrator role |
 | `CIRCUIT_FAILURE_THRESHOLD`, `CIRCUIT_COOLDOWN_SECONDS`, `KEY_COOLDOWN_SECONDS` | `2`, `300`, `300` | breaker / key cooldown behaviour |
 

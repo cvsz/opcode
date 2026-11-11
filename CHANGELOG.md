@@ -26,6 +26,15 @@ Single source of truth merging the five archived releases (v1 → v5). v5 was th
 - Dashboard writes route/state files atomically; optimizer uses smoothed scores and flags low-sample models.
 - CI workflow (`.github/workflows/ci.yml`); 16 tests including an end-to-end route test against a fake `opencode`.
 
+## Field-test pass (real opencode v2.2.7 logs, WSL2)
+- Classifier recognises real errors that fell through to `execution_error`: `Insufficient balance. Top up…`, `Purchase pre-paid credits…` (→ `quota_exhausted`) and `No cookie auth credentials found` (→ `authentication`). Captured as test fixtures.
+- Out-of-credits opens the circuit on first failure and stays open 1 h (`CIRCUIT_QUOTA_COOLDOWN_SECONDS`).
+- New `timeout` category; timeouts are no longer classified from `str(TimeoutExpired)`, which embeds the whole prompt.
+- Every failed attempt prints `[router] FAILED model=… category=… exit=…: <last output line>` (secret-redacted).
+- Orchestrator: per-role timeouts (coder 900 s) and opt-in `--auto` per role (`ROLE_AUTO`).
+- `optimizer.py` refactored to `collect_stats()` / `main(path)` so it imports without telemetry (tests failed on a fresh clone/CI before).
+- `free-models.txt`: added `openrouter/gemini-2.0-flash-exp-free`.
+
 ## Not done / needs real data
 - `opencode-cli-errors.txt` is empty, so error patterns in `classify()` are still unverified against real CLI output. Capture a few real failures (bad key, rate limit, unknown model) and add them as test fixtures.
 - `opencode run --format json` could give structured results but its schema isn't in the export.

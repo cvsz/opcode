@@ -26,6 +26,7 @@ def _int_env(name,default):
 
 FAIL_THRESHOLD=max(1,_int_env("CIRCUIT_FAILURE_THRESHOLD",2))
 COOLDOWN=max(0,_int_env("CIRCUIT_COOLDOWN_SECONDS",300))
+QUOTA_COOLDOWN=max(0,_int_env("CIRCUIT_QUOTA_COOLDOWN_SECONDS",3600))
 KEY_COOLDOWN=max(0,_int_env("KEY_COOLDOWN_SECONDS",300))
 
 def utcnow(): return dt.datetime.now(dt.timezone.utc)
@@ -48,15 +49,22 @@ def emit(obj):
     with (STATE/"events.jsonl").open("a",encoding="utf-8") as f:
         f.write(json.dumps(obj,separators=(",",":"))+"\n")
 def config(): return json.loads((CONFIG/"providers.json").read_text(encoding="utf-8"))
+def last_line(output,secret=None,limit=200):
+    """Last non-empty output line, secret-redacted and truncated, for failure diagnostics."""
+    lines=[l.strip() for l in str(output or "").splitlines() if l.strip()]
+    line=lines[-1] if lines else "(no output)"
+    if secret: line=line.replace(secret,"***")
+    return line[:limit]
 def classify(text,code):
     """Classify a failed attempt. Exit code 0 is always success, even when the
     model's answer text happens to mention quota/rate-limit/outage wording."""
     if not code: return "success"
-    s=(text or "").lower()
+    if code==124: return "timeout"
+    s=(text or "")[-4000:].lower()   # errors print last; avoid matching echoed prompt text
     rules=[
-      ("quota_exhausted",r"insufficient_quota|quota_exceeded|billing|credits exhausted|usage limit|resource_exhausted"),
+      ("quota_exhausted",r"insufficient_quota|quota_exceeded|billing|credits exhausted|usage limit|resource_exhausted|insufficient balance|top up|pre-?paid credits|payment required|\b402\b"),   # last five seen in real opencode v2.2.7 output
       ("rate_limited",r"rate.?limit|too many requests|\b429\b|throttl"),
-      ("authentication",r"unauthorized|invalid api key|authentication|forbidden|\b401\b|\b403\b"),
+      ("authentication",r"unauthorized|invalid api key|authentication|forbidden|\b401\b|\b403\b|no (cookie )?auth credentials|credentials? (not found|missing)|not logged in"),
       ("provider_outage",r"service unavailable|bad gateway|gateway timeout|\b5\d\d\b|connection reset|connection refused|timed out|network"),
       ("model_unavailable",r"model not found|unknown model|unsupported model"),
     ]
@@ -130,9 +138,9 @@ def circuit_update(model,category,success):
       item["successes"]=item.get("successes",0)+1; item["failures"]=0; item.pop("open_until",None); item["last_error"]=None
     else:
       item["failures"]=item.get("failures",0)+1; item["last_error"]=category
-      threshold=1 if category in {"authentication","model_unavailable"} else FAIL_THRESHOLD
+      threshold=1 if category in {"authentication","model_unavailable","quota_exhausted"} else FAIL_THRESHOLD
       if item["failures"]>=threshold:
-        item["open_until"]=(utcnow()+dt.timedelta(seconds=COOLDOWN)).isoformat()
+        item["open_until"]=(utcnow()+dt.timedelta(seconds=QUOTA_COOLDOWN if category=="quota_exhausted" else COOLDOWN)).isoformat()
     item["updated_at"]=iso(); atomic(path,state)
 
 def key_candidates(provider):
@@ -211,16 +219,19 @@ def route(args):
         start=time.monotonic()
         try:
           cmd=[OPENCODE,"run","--model",model]
+          if getattr(args,"auto",False): cmd.append("--auto")   # opt-in only (ROUTER_AUTO=1 / --auto)
           if os.getenv("ROUTER_ARCHIVED","1")=="1" and supports_flag("run","--archived"): cmd.append("--archived")
           proc=subprocess.run(cmd+[args.prompt],
               capture_output=True,text=True,env=env,
               timeout=args.timeout if args.timeout>0 else None,check=False)
           output=(proc.stdout or "")+"\n"+(proc.stderr or ""); code=proc.returncode
-        except subprocess.TimeoutExpired as exc:
-          output=str(exc); code=124
+        except subprocess.TimeoutExpired:
+          output=f"timed out after {args.timeout}s"; code=124   # not str(exc): that embeds the whole prompt
         duration=round(time.monotonic()-start,3)
         category=classify(output,code); success=code==0
         circuit_update(model,category,success)
+        if not success:
+          print(f"[router] FAILED model={model} slot={key['slot']} category={category} exit={code}: {last_line(output,key['secret'])}",file=sys.stderr)
         if key["slot"]>0:
           # Rotate on authentication errors only.
           if success: key_mark(provider,key["slot"],"success")
@@ -253,6 +264,7 @@ def main():
     r.add_argument("--dry-run",action="store_true",default=os.getenv("DRY_RUN","0")=="1")
     r.add_argument("--max-models",type=int,default=int(os.getenv("MAX_MODELS","0")))
     r.add_argument("--timeout",type=int,default=int(os.getenv("TIMEOUT_SECONDS","180")))
+    r.add_argument("--auto",action="store_true",default=os.getenv("ROUTER_AUTO","0")=="1",help="pass --auto to opencode run (auto-approves permissions)")
     sub.add_parser("health"); sub.add_parser("reset")
     a=p.parse_args(); STATE.mkdir(parents=True,exist_ok=True)
     if a.cmd=="check":
