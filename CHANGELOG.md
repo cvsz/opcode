@@ -36,6 +36,16 @@ Single source of truth merging the five archived releases (v1 → v5). v5 was th
 - CI: Python 3.10-3.13 matrix (README promises 3.10+), least-privilege permissions, committed-bytecode/secret check, Dependabot for Actions.
 - Tests: 16 -> 23 (dashboard auth, headers, Host guard, cancel, classifier regression).
 
+## Full refactor (MASTER.md)
+- Replace CLI subprocess with opencode serve v2 API (`/api/runs` NDJSON) with legacy CLI fallback
+- Consolidated shared modules: `scripts/state.py`, `scripts/config.py`, `scripts/logging_setup.py`, `scripts/db.py` (SQLite)
+- Type hints and `logging` throughout (replaces `print()`)
+- Frontend modularity: `dashboard/index.html` (structure), `dashboard/style.css`, `dashboard/app.js`
+- Dashboard hardening: rate limiting (token bucket), IP/UA in audit log, token rotation after 1000 requests, `/api/settings` persistence
+- Pydantic request/response schemas with manual fallback for CI (no pydantic install required)
+- Dual-write state: JSONL + SQLite for backward compatibility
+- Expanded tests: 16 -> 67 (SSE, token regen, audit log, settings, export, sorting/filtering/pagination)
+
 ## Field-test pass (real opencode v2.2.7 logs, WSL2)
 - Classifier recognises real errors that fell through to `execution_error`: `Insufficient balance. Top up…`, `Purchase pre-paid credits…` (→ `quota_exhausted`) and `No cookie auth credentials found` (→ `authentication`). Captured as test fixtures.
 - Out-of-credits opens the circuit on first failure and stays open 1 h (`CIRCUIT_QUOTA_COOLDOWN_SECONDS`).

@@ -32,8 +32,9 @@
 - [x] dashboard/style.css — all styles
 - [x] dashboard/app.js — modules: api, tables, jobs, settings, exports, SSE, confirm dialog
 
-### Phase 6: Validation (optional)
-- [ ] pydantic or marshmallow schemas (manual validation works; optional)
+### Phase 6: Validation ✅
+- [x] pydantic schemas with manual fallback (CI-safe: no pydantic install required)
+- [x] Fallback BaseModel accepts **kwargs when pydantic unavailable
 
 ### Phase 7: Async server (optional)
 - [ ] aiohttp or asyncio http.server (ThreadingHTTPServer works fine; optional)
