@@ -1,0 +1,10 @@
+[tool.ruff]
+target-version = "py310"
+line-length = 120
+exclude = [".git", "__pycache__", ".venv", "state", "opencode-cli-export"]
+
+[tool.ruff.lint]
+# Correctness-focused. The original code is deliberately dense (E7 compact
+# statements, E501 long HTML/JS lines), so cosmetic E7/E501 rules are out.
+select = ["E4", "E9", "F", "I", "UP", "B", "SIM", "BLE", "PLW", "PERF"]
+ignore = ["E401"]

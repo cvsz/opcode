@@ -5,7 +5,7 @@ opencode/flint-40b-free
 opencode/glm-5.3-flash-free
 opencode/iceman-free
 opencode/inkling-2-small-free
-opencode/longcat-2.5-free
+#opencode/longcat-2.5-free
 opencode/mimo-v2.6-flash-free
 opencode/minimax-m3.1-flash-free
 opencode/nemotron-3.5-lightning-free
@@ -38,3 +38,4 @@ zeaz/zeaz-free
 kilo/kilo-auto/free
 kilo/openrouter/free
 openrouter/openrouter/free
+openrouter/gemini-2.0-flash-exp-free

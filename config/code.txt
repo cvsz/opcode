@@ -1,7 +1,6 @@
-# Ordered candidates; one model ID per line.
-opencode/deepseek-v4.1-flash-free
-opencode/glm-5.3-flash-free
-opencode/flint-40b-free
-opencode/longcat-2.5-free
-openrouter/qwen-2.5-coder-32b-free
-kilo/cohere/north-mini-code:free
+nvidia/nvidia/nemotron-3-nano-omni-30b-a3b-reasoning
+nvidia/nvidia/nemotron-3-ultra-550b-a55b
+nvidia/nvidia/nemotron-3.5-content-safety
+nvidia/nvidia/nemotron-3.5-lightning-30b-a3b
+nvidia/nvidia/nemotron-3.5-super-vl-120b-a12b
+nvidia/nvidia/nemotron-voicechat

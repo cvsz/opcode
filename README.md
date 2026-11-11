@@ -63,7 +63,7 @@ Classification is heuristic based on OpenCode output. It may misclassify provide
 - Provider error parsing depends on CLI error text; this version does not have provider-native structured error codes.
 - The orchestrator stops at the first role that exits non-zero. It does not automatically apply patches based on reviewer output.
 - The quality gate checks test command exit status and existence of a review evidence file. It cannot prove the reviewer was independent or that the evidence is truthful.
-- The control panel is local-only and unauthenticated. It exposes telemetry, never credentials, but can run jobs and edit routes.
+- The control panel is local-only. It uses a per-process API token against cross-origin/local-process abuse, but there is no user login. It exposes telemetry, never credentials, but can run jobs and edit routes.
 - No `--auto` permission bypass is enabled.
 - Use Git branches/worktrees and backups for autonomous code changes. Do not run destructive commands against production systems.
 
@@ -139,6 +139,10 @@ Security boundaries:
 | `ADAPTIVE_ORDER` | `0` | `1` reorders candidates by observed (smoothed) success rate |
 | `REQUIRE_ENV_KEY` | `0` | `1` skips providers that have no env key slot instead of using OpenCode's stored credentials |
 | `ROUTER_ARCHIVED` | `1` | pass `--archived` to `opencode run` when supported |
+| `ROUTER_AUTO` | `0` | `1` passes `--auto` (auto-approve permissions) to `opencode run`. Non-interactive runs cannot answer permission prompts, so file-editing roles may need it; keep off for untrusted prompts |
+| `ROLE_AUTO` | empty | comma list of orchestrator roles run with `--auto`, e.g. `coder,tester` |
+| `ROLE_TIMEOUT_<ROLE>` | planner 180, coder 900, reviewer 300, tester 600, security_reviewer 300 | per-role timeout seconds (`TIMEOUT_SECONDS`, if set, applies to all roles) |
+| `CIRCUIT_QUOTA_COOLDOWN_SECONDS` | `3600` | how long a model stays blocked after an out-of-credits error |
 | `CONTEXT_CHARS` | `6000` | prior-role output carried into the next orchestrator role |
 | `CIRCUIT_FAILURE_THRESHOLD`, `CIRCUIT_COOLDOWN_SECONDS`, `KEY_COOLDOWN_SECONDS` | `2`, `300`, `300` | breaker / key cooldown behaviour |
 
