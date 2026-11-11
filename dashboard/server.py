@@ -47,36 +47,33 @@ except ImportError:  # pragma: no cover
     HAS_PYDANTIC = False
 
     class BaseModel:  # type: ignore[no-redef]
-        pass
+        def __init__(self, **kwargs):
+            for k, v in kwargs.items():
+                setattr(self, k, v)
 
     class ValidationError(Exception):  # type: ignore[no-redef]
         pass
 
 
-def field(*args, **kwargs):  # type: ignore[no-redef]
-    """Fallback when pydantic is unavailable."""
-    return kwargs.get("default")
-
-
 class RunRequest(BaseModel):
-    task: str
-    prompt: str = Field(min_length=1, max_length=50000)
-    model: str = Field(default="", max_length=200)
-    max_models: int = Field(default=0, ge=0, le=100)
-    timeout: int = Field(default=180, ge=0, le=3600)
+    task: str = ""
+    prompt: str = ""
+    model: str = ""
+    max_models: int = 0
+    timeout: int = 180
 
 
 class TaskConfigRequest(BaseModel):
-    task: str
-    models: list[str] = Field(max_length=100)
+    task: str = ""
+    models: list = []
 
 
 class SettingsRequest(BaseModel):
-    settings: dict = Field(default_factory=dict)
+    settings: dict = {}
 
 
 class CancelRequest(BaseModel):
-    id: str
+    id: str = ""
 
 
 TOKEN = secrets.token_urlsafe(_cfg.dashboard_token_bytes)
