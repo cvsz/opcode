@@ -1,6 +1,18 @@
 #!/usr/bin/env python3
 from __future__ import annotations
-import argparse,datetime as dt,http.server,json,os,pathlib,subprocess,threading,urllib.parse,uuid
+
+import argparse
+import contextlib
+import datetime as dt
+import http.server
+import json
+import os
+import pathlib
+import subprocess
+import threading
+import urllib.parse
+import uuid
+
 ROOT=pathlib.Path(__file__).resolve().parents[1]; CONFIG=ROOT/'config'; STATE=ROOT/'state'
 TASKS={'code','review','fast','vision','general'}; JOBS={}; LOCK=threading.Lock(); HTML_PATH=pathlib.Path(__file__).with_name('index.html')
 def atomic_write(p,text):
@@ -24,8 +36,7 @@ def summary():
  p=STATE/'events.jsonl'
  if p.exists():
   for line in p.read_text(encoding='utf-8').splitlines()[-300:]:
-   try:ev.append(json.loads(line))
-   except json.JSONDecodeError:pass
+   with contextlib.suppress(json.JSONDecodeError):ev.append(json.loads(line))
  circuits=load(STATE/'circuits.json',{}); groups={}
  for e in ev:
   m=e.get('model','unknown'); x=groups.setdefault(m,{'model':m,'runs':0,'ok':0,'lat':[],'err':None}); x['runs']+=1;x['ok']+=e.get('status')=='success'
@@ -47,7 +58,7 @@ def start_job(d):
    p=subprocess.Popen(cmd,cwd=ROOT,stdout=subprocess.PIPE,stderr=subprocess.STDOUT,text=True,env=os.environ.copy()); lines=[]
    for line in p.stdout:lines.append(line.rstrip()[:1500]);job['output']='\n'.join(lines[-80:])
    code=p.wait();job.update(status='success' if code==0 else 'failed',exit_code=code)
-  except Exception as e:job.update(status='failed',output=str(e))
+  except Exception as e:job.update(status='failed',output=str(e))  # noqa: BLE001 -- worker boundary: record any failure on the job, never crash the thread
   job['finished_at']=dt.datetime.now(dt.timezone.utc).isoformat()
  threading.Thread(target=worker,daemon=True).start();return job
 class H(http.server.BaseHTTPRequestHandler):
@@ -73,9 +84,9 @@ class H(http.server.BaseHTTPRequestHandler):
     if t not in TASKS:raise ValueError('Invalid task')
     self.sendj({'task':t,'models':[x.strip() for x in (CONFIG/(t+'.txt')).read_text().splitlines() if x.strip() and not x.lstrip().startswith('#')]})
    elif u.path=='/api/catalogue':
-    p=subprocess.run([os.getenv('OPENCODE','opencode'),'models'],cwd=ROOT,capture_output=True,text=True,timeout=30);self.sendj({'output':p.stdout+'\n'+p.stderr,'exit_code':p.returncode})
+    p=subprocess.run([os.getenv('OPENCODE','opencode'),'models'],cwd=ROOT,capture_output=True,text=True,timeout=30,check=False);self.sendj({'output':p.stdout+'\n'+p.stderr,'exit_code':p.returncode})
    else:self.send_error(404)
-  except Exception as e:self.sendj({'error':str(e)},400)
+  except Exception as e:self.sendj({'error':str(e)},400)  # noqa: BLE001 -- HTTP boundary: convert any handler error to a 400 response
  def do_POST(self):
   if not self.host_ok():self.sendj({'error':'Invalid Host header'},403);return
   origin=self.headers.get('Origin')
@@ -91,7 +102,7 @@ class H(http.server.BaseHTTPRequestHandler):
    elif path=='/api/plan':
     t=d.get('task')
     if t not in TASKS:raise ValueError('Invalid task')
-    p=subprocess.run([os.getenv('PYTHON','python3'),str(ROOT/'scripts/router.py'),'plan','--task',t],cwd=ROOT,capture_output=True,text=True,timeout=30);self.sendj({'output':p.stdout+p.stderr,'exit_code':p.returncode})
+    p=subprocess.run([os.getenv('PYTHON','python3'),str(ROOT/'scripts/router.py'),'plan','--task',t],cwd=ROOT,capture_output=True,text=True,timeout=30,check=False);self.sendj({'output':p.stdout+p.stderr,'exit_code':p.returncode})
    elif path=='/api/task-config':
     t=d.get('task');ms=d.get('models')
     if t not in TASKS or not isinstance(ms,list) or len(ms)>100:raise ValueError('Invalid task or model list')
@@ -103,7 +114,7 @@ class H(http.server.BaseHTTPRequestHandler):
    elif path in ('/api/reset-circuits','/api/reset-keys'):
     f=STATE/('circuits.json' if path.endswith('circuits') else 'key-pools.json');STATE.mkdir(exist_ok=True);atomic_write(f,'{}\n');self.sendj({'message':'State reset'})
    else:self.send_error(404)
-  except Exception as e:self.sendj({'error':str(e)},400)
+  except Exception as e:self.sendj({'error':str(e)},400)  # noqa: BLE001 -- HTTP boundary: convert any handler error to a 400 response
  def log_message(self,fmt,*args):print('[dashboard] '+fmt%args)
 def main():
  p=argparse.ArgumentParser();p.add_argument('--host',default='127.0.0.1');p.add_argument('--port',type=int,default=8765);a=p.parse_args()

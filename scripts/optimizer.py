@@ -1,7 +1,11 @@
 #!/usr/bin/env python3
 """Rank models by observed success rate and latency using router JSONL events."""
 from __future__ import annotations
-import json, pathlib, statistics
+
+import json
+import pathlib
+import statistics
+
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 EVENTS = ROOT / "state" / "events.jsonl"
 if not EVENTS.exists():
