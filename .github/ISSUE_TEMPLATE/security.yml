@@ -1,0 +1,23 @@
+name: Security Advisory
+description: Report security vulnerabilities
+title: "[SECURITY] "
+labels: security
+body:
+  - type: textarea
+    id: description
+    attributes:
+      label: Vulnerability description
+      description: Describe the security issue
+    validations:
+      required: true
+  - type: textarea
+    id: impact
+    attributes:
+      label: Impact
+      description: Who could be affected and how
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Steps to reproduce
+    validations:
+      required: false

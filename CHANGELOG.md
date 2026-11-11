@@ -26,6 +26,16 @@ Single source of truth merging the five archived releases (v1 → v5). v5 was th
 - Dashboard writes route/state files atomically; optimizer uses smoothed scores and flags low-sample models.
 - CI workflow (`.github/workflows/ci.yml`); 16 tests including an end-to-end route test against a fake `opencode`.
 
+## Hardening + frontend pass
+- Dashboard: per-process random API token (injected into the served page, required via `X-Router-Token` on every `/api/*` call, constant-time compare) on top of the Host/Origin guards, so other local processes/pages cannot drive the control panel.
+- Dashboard: security headers (CSP with `frame-ancestors 'none'`, `X-Frame-Options`, `nosniff`, `Referrer-Policy`).
+- Dashboard: job history is bounded (50) and mutated under a lock; running jobs can be cancelled (`POST /api/cancel`).
+- Frontend rewritten: light/dark theme, toasts instead of `alert()`, success-rate bars, Cancel button, Ctrl/Cmd+Enter to run, model autocomplete from the catalogue, ARIA live regions, focus styles, no polling while the tab is hidden.
+- Router: the outage pattern no longer matches arbitrary 5xx-looking numbers (`line 512`); only 500-504.
+- Repo: removed committed `__pycache__`; `.gitignore` covers bytecode.
+- CI: Python 3.10-3.13 matrix (README promises 3.10+), least-privilege permissions, committed-bytecode/secret check, Dependabot for Actions.
+- Tests: 16 -> 23 (dashboard auth, headers, Host guard, cancel, classifier regression).
+
 ## Field-test pass (real opencode v2.2.7 logs, WSL2)
 - Classifier recognises real errors that fell through to `execution_error`: `Insufficient balance. Top up…`, `Purchase pre-paid credits…` (→ `quota_exhausted`) and `No cookie auth credentials found` (→ `authentication`). Captured as test fixtures.
 - Out-of-credits opens the circuit on first failure and stays open 1 h (`CIRCUIT_QUOTA_COOLDOWN_SECONDS`).

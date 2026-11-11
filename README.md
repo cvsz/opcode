@@ -63,7 +63,7 @@ Classification is heuristic based on OpenCode output. It may misclassify provide
 - Provider error parsing depends on CLI error text; this version does not have provider-native structured error codes.
 - The orchestrator stops at the first role that exits non-zero. It does not automatically apply patches based on reviewer output.
 - The quality gate checks test command exit status and existence of a review evidence file. It cannot prove the reviewer was independent or that the evidence is truthful.
-- The control panel is local-only and unauthenticated. It exposes telemetry, never credentials, but can run jobs and edit routes.
+- The control panel is local-only. It uses a per-process API token against cross-origin/local-process abuse, but there is no user login. It exposes telemetry, never credentials, but can run jobs and edit routes.
 - No `--auto` permission bypass is enabled.
 - Use Git branches/worktrees and backups for autonomous code changes. Do not run destructive commands against production systems.
 

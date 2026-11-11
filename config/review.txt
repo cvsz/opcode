@@ -1,4 +1,3 @@
-# Ordered candidates; one model ID per line.
 opencode/beam-free
 opencode/mimo-v2.6-flash-free
 opencode/glm-5.3-flash-free
