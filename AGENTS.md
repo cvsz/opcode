@@ -1,28 +1,32 @@
 # AGENTS.md
 
-# OpenCode Router
+# OpenCode Free-Model Router
 
-Local multi-API-key router with circuit breakers, telemetry, and a hardened control-panel dashboard.
+Local multi-API-key router with circuit breakers, telemetry, and a hardened modular control-panel dashboard.
 
 ## Project structure
 
 ```
-dashboard/         Control panel (HTML + Python HTTP server)
-  index.html       Frontend (single file)
-  server.py        HTTP API + SSE stream + audit log
-scripts/           Router, key pool, optimizer, orchestrator, quality gate
-  router.py        Multi-key failover routing with circuit breakers
+dashboard/         Control panel (modular frontend + Python HTTP server)
+  index.html       HTML structure (references style.css + app.js)
+  style.css        All styles (dark/light themes, responsive, ARIA)
+  app.js           All frontend logic (api, tables, jobs, settings, exports, SSE, confirm dialog)
+  server.py        HTTP API server: token auth, SSE, audit log, rate limiting, pydantic schemas
+scripts/           Router, key pool, optimizer, orchestrator, quality gate, state, config, logging
+  router.py        Multi-key failover routing, circuit breakers, classify, v2 API client (dual-path)
   state.py         Shared JSON state helpers
-  config.py        Centralized configuration (Config dataclass)
+  config.py        Centralized Config dataclass
   logging_setup.py Shared logging
+  db.py            SQLite state store (events, audit, circuits, key pools, settings)
   key_pool.py      Key pool management CLI
-  optimizer.py     Telemetry-based model scoring
-  orchestrator.py  Multi-role orchestration
-  quality_gate.py  Quality gate checks
-config/            Per-task ordered model lists
-state/             Runtime state (events, circuits, keys, audit)
-tests/             Python unittest suite
-.github/           CI + Dependabot
+  optimizer.py     Telemetry-based model scoring (collect_stats / main)
+  orchestrator.py  Multi-role orchestration (planner → coder → reviewer → tester → security_reviewer)
+  quality_gate.py  Fail-closed quality gate checks
+config/            Per-task ordered model lists (code, review, fast, vision, general)
+state/             Runtime state (events.jsonl, circuits.json, key-pools.json, audit.jsonl,
+                   dashboard-settings.json, router.db SQLite)
+tests/             Python unittest suite (67 tests)
+.github/           CI workflow, Dependabot, issue templates
 ```
 
 ## How to run
@@ -41,6 +45,9 @@ python -m py_compile scripts/*.py dashboard/server.py
 python scripts/router.py route --task code --prompt "hello"
 python scripts/router.py plan --task code
 python scripts/router.py check
+
+# Dashboard endpoints
+python dashboard/server.py --host 127.0.0.1 --port 8765
 ```
 
 ## Key environment variables
@@ -61,6 +68,7 @@ python scripts/router.py check
 | `DASHBOARD_PORT` | `8765` | Dashboard bind port |
 | `DASHBOARD_TOKEN_BYTES` | `24` | API token length |
 | `LOG_LEVEL` | `INFO` | Logging level |
+| `OPENCODE_SERVER` | unset | if set, router calls `opencode serve` v2 API instead of CLI subprocess |
 
 ## Testing
 
@@ -68,7 +76,7 @@ python scripts/router.py check
 python -m unittest discover -s tests -v
 ```
 
-67 tests cover router classification, circuit breakers, key pools, dashboard auth, SSE, audit log, and classifier regression.
+67 tests cover router classification, circuit breakers, key pools, dashboard auth, SSE, audit log, settings, export, sorting/filtering/pagination, and classifier regression.
 
 ## Linting
 
@@ -76,3 +84,23 @@ python -m unittest discover -s tests -v
 shellcheck scripts/load-keys.sh
 make -n help test keys optimize
 ```
+
+## Key features summary
+
+### Backend (`scripts/router.py`, `dashboard/server.py`)
+- Provider-scoped multi-API-key failover with cooldowns
+- Per-model circuit breakers (500–504 outage classification only)
+- Provider error classification (quota, rate limit, auth, outage, model unavailable, execution error)
+- Dual execution: legacy `opencode run` CLI + `opencode serve` v2 API NDJSON
+- SQLite state (dual-write with JSONL for backward compat)
+- Pydantic request/response schemas with manual fallback
+- Logging module throughout (replaces `print()`)
+- Type hints throughout
+
+### Frontend (`dashboard/app.js`, `dashboard/style.css`, `dashboard/index.html`)
+- Modular: HTML structure / CSS styles / JS logic
+- SSE real-time updates with polling fallback
+- Token auth, rate limiting, audit log, settings persistence
+- Table sorting/filtering/pagination, job detail view, CSV/JSON export
+- Dark/light theme, ARIA live regions, focus-visible, keyboard-navigable
+- Custom confirm dialogs, loading states, toasts

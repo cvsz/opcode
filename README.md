@@ -1,8 +1,8 @@
 # OpenCode Free-Model Router
 
-Free-model router for the OpenCode CLI: ordered per-task fallbacks, provider error classification, per-model circuit breakers, provider-scoped multi-API-key failover, role-based orchestration, a fail-closed quality gate, telemetry-based ranking, and a local control panel. See `CHANGELOG.md` for lineage.
+Free-model router for the OpenCode CLI: ordered per-task fallbacks, provider error classification, per-model circuit breakers, provider-scoped multi-API-key failover, role-based orchestration, a fail-closed quality gate, telemetry-based ranking, and a modular local control panel. See `CHANGELOG.md` for lineage.
 
-## GitHub features
+## GitHub repository features
 
 | Feature | File | Purpose |
 |---|---|---|
@@ -13,6 +13,52 @@ Free-model router for the OpenCode CLI: ordered per-task fallbacks, provider err
 | Security advisory | `.github/ISSUE_TEMPLATE/security.yml` | Private security vulnerability reporting form |
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for the contribution workflow and [GOVERNANCE.md](GOVERNANCE.md) for decision-making.
+
+## Project features
+
+### Router (`scripts/router.py`)
+- **Multi-API-key automatic switching**: ordered key slots per provider, secrets read from env vars only, injected into the OpenCode child process under the provider's auth env var; keys never printed or persisted
+- **Per-model circuit breakers**: opens after configurable failure threshold (default 2); authentication/model-not-found opens after one failure; quota opens on first failure with a 1-hour cooldown
+- **Provider error classification**: `quota_exhausted`, `rate_limited`, `authentication`, `provider_outage` (500–504 only), `model_unavailable`, `execution_error` — heuristic based on OpenCode CLI output
+- **Dual execution paths**: legacy `opencode run` CLI subprocess, plus `opencode serve` v2 API (`POST /api/runs` NDJSON stream) when `OPENCODE_SERVER` is set — captures real token/cost fields instead of estimating
+- **Adaptive model ordering**: Laplace-smoothed success rate reordering when `ADAPTIVE_ORDER=1`
+- **Opt-in `--auto`**: per-role `ROLE_AUTO` and global `ROUTER_AUTO=1` (auto-approves permissions)
+- **`--archived`**: passed to `opencode run` when supported (`ROUTER_ARCHIVED=1`)
+
+### Dashboard / control panel (`dashboard/server.py` + `dashboard/index.html` + `dashboard/style.css` + `dashboard/app.js`)
+- **Modular frontend**: `index.html` (structure), `style.css` (all styles, dark/light themes), `app.js` (all logic: api, tables, jobs, settings, exports, SSE, confirm dialog)
+- **Token authentication**: per-process random API token injected into the served page, required via `X-Router-Token` on every `/api/*` call (constant-time compare via `hmac.compare_digest`); rotates after 1000 requests or via `POST /api/token/regen`; old tokens immediately invalidated
+- **Security headers**: CSP with `frame-ancestors 'none'`, `X-Frame-Options: DENY`, `nosniff`, `Referrer-Policy`
+- **Host/Origin guards**: DNS-rebinding protection, non-loopback Host header rejection, cross-origin POST rejection
+- **Rate limiting**: token bucket (30 requests per 60 seconds per IP) on mutating endpoints
+- **SSE real-time updates**: `/api/stream` broadcasts state changes; `EventSource` with auto-reconnect, falls back to polling when tab hidden
+- **Job management**: bounded history (50), mutate under lock, running jobs cancellable via `POST /api/cancel`
+- **Audit log**: `state/audit.jsonl` records action, IP, user agent for every mutating endpoint; `GET /api/audit` returns last 500 entries
+- **Settings persistence**: `/api/settings` GET/POST — theme, refresh interval stored server-side; survives token regen
+- **Export**: CSV/JSON client-side download for keys, events, jobs tables
+- **Custom confirm dialogs**: `<dialog>`-backed modal replaces `confirm()` for destructive actions (reset, save, cancel, token regen)
+- **Loading/disabled states**: every action button disables + spinner during `fetch`, preventing double-submit
+- **Accessibility**: `aria-live` regions, `aria-describedby` on status badges, visible `:focus-visible`, `<label>` on all inputs, keyboard-operable dialogs, reduced-motion support
+- **Responsive**: grid collapses on mobile; tables sticky headers; scrollable panels
+
+### Orchestrator (`scripts/orchestrator.py`)
+- **Role-based orchestration**: planner → coder → reviewer → tester → security reviewer, run sequentially
+- **Per-role timeouts**: configurable via `ROLE_TIMEOUT_<ROLE>` (planner 180s, coder 900s, etc.)
+- **Bounded context carry-over**: `CONTEXT_CHARS` (default 6000) tail of earlier role output passed to later roles, labelled untrusted
+- **Opt-in `--auto` per role**: `ROLE_AUTO` env var
+
+### Quality gate (`scripts/quality_gate.py`)
+- **Fail-closed**: fails if test command exits non-zero or review evidence file missing
+- Runs the supplied test command in the project parent directory
+
+### Optimizer (`scripts/optimizer.py`)
+- **Telemetry-based model scoring**: collects stats from `state/events.jsonl`
+- **Smoothed scores**: Laplace smoothing; flags low-sample models
+- Importable without telemetry (refactored to `collect_stats()` / `main(path)`)
+
+### Key pool (`scripts/key_pool.py`)
+- Provider-scoped key slots with cooldowns and success/failure counters
+- Rotates on authentication errors only (not quota/rate-limit)
 
 ## Requirements
 - OpenCode CLI installed and provider credentials configured.
@@ -86,6 +132,7 @@ Classification is heuristic based on OpenCode output. It may misclassify provide
 - `state/quality-gate.json`: last quality gate result.
 - `state/audit.jsonl`: dashboard mutating-action audit log (action, timestamp, IP, user agent).
 - `state/dashboard-settings.json`: persisted dashboard settings (theme, refresh interval).
+- `state/router.db`: SQLite dual-write of events, audit, circuits, key pools, settings.
 
 ## Multi-API-key automatic switching
 
@@ -168,6 +215,42 @@ Security boundaries:
 | `OPENCODE_SERVER` | unset | if set, router calls `opencode serve` v2 API (`/api/runs`) instead of CLI subprocess |
 
 `opencode-cli-export/` holds `--help` dumps of the installed OpenCode CLI, used as the reference for flags the router relies on.
+
+## API reference
+
+### Dashboard API (`dashboard/server.py`)
+All endpoints require `X-Router-Token` header (constant-time compare) except SSE.
+
+| Endpoint | Method | Description |
+|---|---|---|
+| `GET /` | GET | Serve control panel HTML with injected token |
+| `GET /api/summary` | GET | Telemetry summary: events, models, circuits, keys, jobs |
+| `GET /api/health` | GET | Circuit and key-pool state |
+| `GET /api/stream` | GET | SSE real-time updates |
+| `GET /api/task-config?task=<t>` | GET | Ordered model list for a task |
+| `GET /api/catalogue` | GET | Installed model catalogue via `opencode models` |
+| `GET /api/audit` | GET | Last 500 audit log entries (action, IP, UA) |
+| `GET /api/settings` | GET | Dashboard settings (theme, refresh interval) |
+| `POST /api/run` | POST | Queue a router job (202) |
+| `POST /api/cancel` | POST | Cancel a running job by ID |
+| `POST /api/plan` | POST | Preview route for a task |
+| `POST /api/task-config` | POST | Save ordered model list for a task |
+| `POST /api/reset-circuits` | POST | Reset circuit breaker state |
+| `POST /api/reset-keys` | POST | Reset key-pool cooldowns/counters |
+| `POST /api/token/regen` | POST | Regenerate the API token; old tokens invalidated |
+| `POST /api/settings` | POST | Save dashboard settings |
+
+### OpenCode v2 API (`opencode serve`)
+The router can call `opencode serve`'s HTTP API when `OPENCODE_SERVER` is set (requires `OPENCODE_PASSWORD`):
+
+| Endpoint | Method | Description |
+|---|---|---|
+| `GET /api/info` | GET | Server info |
+| `POST /api/runs` | POST | Run a message (NDJSON event stream) |
+| `GET /api/runs/{id}` | GET | Run status |
+| `DELETE /api/runs/{id}` | DELETE | Cancel run |
+| `GET /api/models` | GET | Available models |
+| `GET /api/sessions` | GET | List sessions |
 
 ## Documentation
 - [AGENTS.md](AGENTS.md) — agent instructions for this repo
