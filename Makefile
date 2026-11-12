@@ -4,22 +4,15 @@
 
 .DEFAULT_GOAL := help
 
-.PHONY: help all start stop status restart clean-pids clean \
-        doctor models free-models check-models \
-        plan route code review fast vision general \
-        orchestrate quality \
-        dashboard dashboard-open dashboard-stop dashboard-restart dashboard-status \
-        optimize health reset-circuit keys key-reset \
-        test lint type-check security-scan \
-        frontend-lint frontend-check backend-lint backend-type-check backend-security \
-        ci-all dev dev-stop
+# ═══════════════════════════════════════════════════════════════════════════════════
+# HELP
+# ═══════════════════════════════════════════════════════════════════════════════════
 
-# ── Help ────────────────────────────────────────────────────────────────────
 help:
 	@printf '%s\n' \
 	  'OpenCode Free Router — Complete Control Makefile' \
 	  '' \
-	  '═══════════════════════════════════════════════════════════════════════════════════════════════════════════════' \
+	  '═══════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════' \
 	  'ALL-IN-ONE (start everything)' \
 	  '  make all               Start dashboard + run quality gate + run tests' \
 	  '  make start             Start dashboard service in background' \
@@ -28,7 +21,7 @@ help:
 	  '  make restart           Stop and start all services' \
 	  '  make clean-pids        Remove stale PID files' \
 	  '' \
-	  '════════════════════════════════════════════════════════════════════════════════════════════════════════════════' \
+	  '═════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════' \
 	  'DISCOVERY' \
 	  '  make doctor            Verify OpenCode CLI, python3, bash availability' \
 	  '  make models            List available OpenCode models' \
@@ -101,7 +94,7 @@ DASHBOARD_PID := $(PID_DIR)/dashboard.pid
 ORCHESTRATOR_PID := $(PID_DIR)/orchestrator.pid
 QUALITY_PID := $(PID_DIR)/quality.pid
 
-# ═══════════════════════════════════════════════════════════════════════════════════
+# ════════════════════════════════════════════════════════════════════════════════════
 # ALL-IN-ONE: Start EVERYTHING with one command
 # ═══════════════════════════════════════════════════════════════════════════════════
 
@@ -245,6 +238,13 @@ dashboard-stop:
 
 dashboard-restart: dashboard-stop start-dashboard   ## Restart dashboard service
 
+dashboard-status:
+	@if [ -f "$(DASHBOARD_PID)" ] && kill -0 "$$(cat "$(DASHBOARD_PID)")" 2>/dev/null; then \
+		echo "✅ Dashboard running (PID $$(cat "$(DASHBOARD_PID)")) on http://$(DASHBOARD_HOST):$(DASHBOARD_PORT)/"; \
+	else \
+		echo "❌ Dashboard not running."; \
+	fi
+
 # ═══════════════════════════════════════════════════════════════════════════════════
 # UTILITIES — BACKEND FUNCTIONS
 # ═══════════════════════════════════════════════════════════════════════════════════
@@ -327,9 +327,9 @@ backend-security:
 # CI PIPELINE — ALL CHECKS IN ONE COMMAND
 # ═══════════════════════════════════════════════════════════════════════════════════
 
-ci-all: frontend-lint frontend-check backend-lint backend-type-check backend-security test   ## Run ALL checks: lint + type-check + security + tests (full CI)
+ci-all: frontend-lint frontend-check backend-lint backend-type-check backend-security test   ## Run ALL checks: lint + type-check + security + tests
 
-# ════════════════════════════════════════════════════════════════════════════════════
+# ═══════════════════════════════════════════════════════════════════════════════════
 # DEV WORKFLOW — FULL DEVELOPMENT CYCLE
 # ═══════════════════════════════════════════════════════════════════════════════════
 
