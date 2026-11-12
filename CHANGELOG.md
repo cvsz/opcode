@@ -24,7 +24,7 @@ Single source of truth merging the five archived releases (v1 → v5). v5 was th
 - Opt-in `ADAPTIVE_ORDER=1`: reorder candidates by Laplace-smoothed success rate from telemetry (ties keep your configured order).
 - Orchestrator passes a bounded tail (`CONTEXT_CHARS`, default 6000) of earlier role output to later roles, labelled untrusted.
 - Dashboard writes route/state files atomically; optimizer uses smoothed scores and flags low-sample models.
-- CI workflow (`.github/workflows/ci.yml`); 16 tests including an end-to-end route test against a fake `opencode`.
+- CI workflow (`.github/workflows/ci.yml`); 67 tests including an end-to-end route test against a fake `opencode`.
 
 ## Hardening + frontend pass
 - Dashboard: per-process random API token (injected into the served page, required via `X-Router-Token` on every `/api/*` call, constant-time compare) on top of the Host/Origin guards, so other local processes/pages cannot drive the control panel.
@@ -34,7 +34,7 @@ Single source of truth merging the five archived releases (v1 → v5). v5 was th
 - Router: the outage pattern no longer matches arbitrary 5xx-looking numbers (`line 512`); only 500-504.
 - Repo: removed committed `__pycache__`; `.gitignore` covers bytecode.
 - CI: Python 3.10-3.13 matrix (README promises 3.10+), least-privilege permissions, committed-bytecode/secret check, Dependabot for Actions.
-- Tests: 16 -> 23 (dashboard auth, headers, Host guard, cancel, classifier regression).
+- Tests: 16 -> 67 (dashboard auth, headers, Host guard, cancel, classifier regression, SSE, token regen, audit log, settings).
 
 ## Full refactor (MASTER.md)
 - Replace CLI subprocess with opencode serve v2 API (`/api/runs` NDJSON) with legacy CLI fallback
