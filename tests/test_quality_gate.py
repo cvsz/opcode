@@ -107,6 +107,45 @@ class QualityGateTests(unittest.TestCase):
         self.assertEqual(code, 2)
         self.assertFalse((self.root / "state" / "quality-gate.json").exists())
 
+    def test_command_injection_is_neutralized(self):
+        """shell metacharacters in TEST_COMMAND are treated as arguments to
+        the executable, not executed as shell commands. shell=True is no
+        longer used, so ';' cannot separate commands."""
+        # Create a sentinel file that 'rm' would delete if shell=True were used.
+        sentinel = pathlib.Path("/tmp/qg_injection_sentinel")
+        sentinel.write_text("sentinel", encoding="utf-8")
+        try:
+            command_injection = f"{shlex.quote(sys.executable)} -c \"pass\"; rm -f {sentinel}"
+            code = self.run_gate(TEST_COMMAND=command_injection, INDEPENDENT_REVIEW_FILE=str(self.review))
+            # Python runs 'pass' (exit 0); 'rm' is just an argv element, never executed.
+            self.assertEqual(code, 0)
+            # The sentinel must still exist: 'rm' never ran as a separate command.
+            self.assertTrue(sentinel.exists(), "shell metacharacter ';' was interpreted as command separator — injection succeeded!")
+        finally:
+            with contextlib.suppress(OSError):
+                sentinel.unlink()
+
+    def test_shell_metacharacters_treated_as_args(self):
+        """Semicolons and other shell metacharacters are passed as argv entries
+        to Python, not interpreted by a shell."""
+        code = self.run_gate(
+            TEST_COMMAND=f"{shlex.quote(sys.executable)} -c \"import sys; print(sys.argv[1:3])\"; echo INJECTED",
+            INDEPENDENT_REVIEW_FILE=str(self.review),
+        )
+        # Python executes 'import sys; print(sys.argv[1:3])' and exits 0.
+        # '; echo INJECTED' is just argv data, never executed by a shell.
+        self.assertEqual(code, 0)
+
+    def test_backtick_command_substitution_is_blocked(self):
+        """Backticks in TEST_COMMAND are literal characters, not command substitution."""
+        code = self.run_gate(
+            TEST_COMMAND=f"{shlex.quote(sys.executable)} -c \"pass\"; `touch /tmp/backtick_injected`",
+            INDEPENDENT_REVIEW_FILE=str(self.review),
+        )
+        self.assertEqual(code, 0)
+        # touch never ran as a command; the file was never created.
+        self.assertFalse(pathlib.Path("/tmp/backtick_injected").exists())
+
 
 if __name__ == "__main__":
     unittest.main()

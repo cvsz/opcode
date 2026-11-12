@@ -5,9 +5,7 @@ scalable querying of events, audit log, circuits, and key pools.
 """
 from __future__ import annotations
 
-import contextlib
 import json
-import os
 import pathlib
 import sqlite3
 import threading
@@ -19,7 +17,7 @@ _DB_PATH: pathlib.Path | None = None
 
 
 def _resolve_paths() -> tuple[pathlib.Path, pathlib.Path]:
-    global _STATE, _DB_PATH
+    global _STATE, _DB_PATH  # noqa: PLW0603
     if _STATE is None:
         _STATE = ROOT / "state"
     _DB_PATH = _STATE / "router.db"
@@ -30,7 +28,7 @@ _conn: sqlite3.Connection | None = None
 
 
 def connect() -> sqlite3.Connection:
-    global _conn
+    global _conn  # noqa: PLW0603
     with _conn_lock:
         if _conn is None:
             state_dir, db_path = _resolve_paths()
@@ -104,7 +102,7 @@ def _init_schema(conn: sqlite3.Connection) -> None:
 
 
 def close() -> None:
-    global _conn
+    global _conn  # noqa: PLW0603
     with _conn_lock:
         if _conn is not None:
             _conn.close()
@@ -187,17 +185,16 @@ def query_audit(limit: int = 500) -> list[dict[str, Any]]:
     rows = conn.execute(
         "SELECT * FROM audit ORDER BY id DESC LIMIT ?", (limit,)
     ).fetchall()
-    out: list[dict[str, Any]] = []
-    for r in rows:
-        out.append(
-            {
-                "ts": r["ts"],
-                "action": r["action"],
-                "detail": json.loads(r["detail"]) if r["detail"] else None,
-                "ip": r["ip"],
-                "ua": r["ua"],
-            }
-        )
+    out: list[dict[str, Any]] = [
+        {
+            "ts": r["ts"],
+            "action": r["action"],
+            "detail": json.loads(r["detail"]) if r["detail"] else None,
+            "ip": r["ip"],
+            "ua": r["ua"],
+        }
+        for r in rows
+    ]
     return out
 
 

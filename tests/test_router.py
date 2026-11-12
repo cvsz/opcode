@@ -233,4 +233,30 @@ class RouteIntegration(unittest.TestCase):
         ev=[json.loads(l) for l in (router.STATE/"events.jsonl").read_text().splitlines()]
         self.assertEqual(ev[0]["status"],"failure"); self.assertEqual(ev[0]["key_slot"],0)
 
+    def test_validate_url_allows_http(self):
+        self.assertEqual(router._validate_url("http://127.0.0.1:8765/api/runs"), "http://127.0.0.1:8765/api/runs")
+
+    def test_validate_url_allows_https(self):
+        self.assertEqual(router._validate_url("https://example.com/api/runs"), "https://example.com/api/runs")
+
+    def test_validate_url_rejects_file_scheme(self):
+        with self.assertRaises(ValueError):
+            router._validate_url("file:///etc/passwd")
+
+    def test_validate_url_rejects_ftp_scheme(self):
+        with self.assertRaises(ValueError):
+            router._validate_url("ftp://example.com/file")
+
+    def test_validate_url_rejects_gopher_scheme(self):
+        with self.assertRaises(ValueError):
+            router._validate_url("gopher://example.com/")
+
+    def test_validate_url_rejects_empty_hostname(self):
+        with self.assertRaises(ValueError):
+            router._validate_url("http://")
+
+    def test_validate_url_rejects_no_scheme(self):
+        with self.assertRaises(ValueError):
+            router._validate_url("example.com/api/runs")
+
 if __name__=="__main__": unittest.main()

@@ -7,7 +7,6 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
-from typing import Optional
 
 
 @dataclass(frozen=True)
@@ -39,7 +38,7 @@ class Config:
     log_level: str = "INFO"
 
     @classmethod
-    def from_env(cls) -> "Config":
+    def from_env(cls) -> Config:
         def _int_env(name: str, default: int) -> int:
             try:
                 return int(os.getenv(name, str(default)))

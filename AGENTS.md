@@ -25,17 +25,33 @@ scripts/           Router, key pool, optimizer, orchestrator, quality gate, stat
 config/            Per-task ordered model lists (code, review, fast, vision, general)
 state/             Runtime state (events.jsonl, circuits.json, key-pools.json, audit.jsonl,
                    dashboard-settings.json, router.db SQLite)
-tests/             Python unittest suite (67 tests)
+tests/             Python unittest suite (77 tests)
 .github/           CI workflow, Dependabot, issue templates
+Makefile           All-in-one control: start/stop/status/restart, test/lint/type-check/security-scan/ci-all
 ```
 
 ## How to run
 
 ```bash
-# Start the dashboard control panel (http://127.0.0.1:8765)
-python dashboard/server.py
+# Start everything (dashboard + quality gate + tests) — one command
+make all
 
-# Run the test suite
+# Start dashboard only (background service)
+make start
+
+# Stop all services
+make stop
+
+# Check service status
+make status
+
+# Restart all services
+make restart
+
+# Run dashboard control panel (http://127.0.0.1:8765)
+python dashboard/server.py --host 127.0.0.1 --port 8765
+
+# Run the test suite (77 tests)
 python -m unittest discover -s tests -v
 
 # Compile-check all Python
@@ -46,8 +62,20 @@ python scripts/router.py route --task code --prompt "hello"
 python scripts/router.py plan --task code
 python scripts/router.py check
 
-# Dashboard endpoints
-python dashboard/server.py --host 127.0.0.1 --port 8765
+# Quality gate (fail-closed)
+python scripts/quality_gate.py
+
+# Full CI: lint + type-check + security + tests
+make ci-all
+
+# Security scan only
+make security-scan   # bandit + pip-audit
+
+# Frontend check
+make frontend-check
+
+# Backend checks
+make backend-lint backend-type-check backend-security
 ```
 
 ## Key environment variables
@@ -76,13 +104,16 @@ python dashboard/server.py --host 127.0.0.1 --port 8765
 python -m unittest discover -s tests -v
 ```
 
-67 tests cover router classification, circuit breakers, key pools, dashboard auth, SSE, audit log, settings, export, sorting/filtering/pagination, and classifier regression.
+77 tests cover router classification, circuit breakers, key pools, dashboard auth, SSE, audit log, settings, export, sorting/filtering/pagination, classifier regression, and security regression (command injection neutralization, SSRF URL scheme validation).
 
 ## Linting
 
 ```bash
 shellcheck scripts/load-keys.sh
-make -n help test keys optimize
+make lint          # ruff check
+make type-check    # mypy
+make security-scan # bandit + pip-audit
+make ci-all        # lint + type-check + security + tests
 ```
 
 ## Key features summary
@@ -96,6 +127,8 @@ make -n help test keys optimize
 - Pydantic request/response schemas with manual fallback
 - Logging module throughout (replaces `print()`)
 - Type hints throughout
+- Security: SSRF protection via URL scheme validation (http/https only)
+- Security: Command injection prevention — `shell=False` for `TEST_COMMAND`, uses `shlex.split()`
 
 ### Frontend (`dashboard/app.js`, `dashboard/style.css`, `dashboard/index.html`)
 - Modular: HTML structure / CSS styles / JS logic

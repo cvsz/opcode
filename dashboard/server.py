@@ -24,11 +24,16 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from scripts import config as cfg_mod
-from scripts import logging_setup
-from scripts import state as state_mod
-from scripts.state import (
-    STATE, CONFIG, TASKS, utcnow, iso, load_json, save_json, atomic_write_text,
+from scripts import config as cfg_mod  # noqa: E402
+from scripts import logging_setup  # noqa: E402
+from scripts.state import (  # noqa: E402
+    CONFIG,
+    STATE,
+    TASKS,
+    atomic_write_text,
+    load_json,
+    save_json,
+    utcnow,
 )
 
 log = logging_setup.setup_logging("INFO", "dashboard")
@@ -41,7 +46,7 @@ HTML_PATH = pathlib.Path(__file__).with_name("index.html")
 # ---------------------------------------------------------------------------
 
 try:
-    from pydantic import BaseModel, Field, ValidationError
+    from pydantic import BaseModel, ValidationError
     HAS_PYDANTIC = True
 except ImportError:  # pragma: no cover
     HAS_PYDANTIC = False
@@ -118,9 +123,8 @@ def audit(action: str, detail: Any = None, ip: str = "", ua: str = "") -> None:
             "ip": ip,
             "ua": ua,
         }
-        with AUDIT_LOCK:
-            with (STATE / "audit.jsonl").open("a", encoding="utf-8") as f:
-                f.write(json.dumps(entry, separators=(",", ":")) + "\n")
+        with AUDIT_LOCK, (STATE / "audit.jsonl").open("a", encoding="utf-8") as f:
+            f.write(json.dumps(entry, separators=(",", ":")) + "\n")
     except OSError:
         pass
 
@@ -140,10 +144,10 @@ def rate_limited(ip: str) -> bool:
 # ---------------------------------------------------------------------------
 
 def rotate_token() -> str:
-    global TOKEN, TOKEN_REQUEST_COUNT
+    global TOKEN, TOKEN_REQUEST_COUNT  # noqa: PLW0603
     with TOKEN_LOCK:
         TOKEN = secrets.token_urlsafe(TOKEN_BYTES)
-        TOKEN_REQUEST_COUNT = 0
+        TOKEN_REQUEST_COUNT = 0  # noqa: PLW0603
         audit("token-regen", {"scheduled": True})
     return TOKEN
 
@@ -254,6 +258,7 @@ def start_job(d: dict[str, Any]) -> dict[str, Any]:
                 text=True, env=os.environ.copy(),
             )
             PROCS[jid] = p
+            assert p.stdout is not None
             lines: list[str] = []
             for line in p.stdout:
                 lines.append(line.rstrip()[:1500])
@@ -273,15 +278,21 @@ def start_job(d: dict[str, Any]) -> dict[str, Any]:
     return job
 
 
+def _queue_put_nowait(q: queue.Queue, payload: bytes) -> bool:
+    """Try to put payload on queue; return False if queue is full."""
+    try:
+        q.put_nowait(payload)
+        return True
+    except queue.Full:
+        return False
+
+
 def sse_broadcast(data: dict[str, Any]) -> None:
     payload = ("data: " + json.dumps(data, separators=(",", ":")) + "\n\n").encode()
     with SSE_LOCK:
-        dead: list[queue.Queue] = []
-        for q in list(SSE_SUBSCRIBERS):
-            try:
-                q.put_nowait(payload)
-            except Exception:
-                dead.append(q)
+        dead: list[queue.Queue] = [
+            q for q in list(SSE_SUBSCRIBERS) if not _queue_put_nowait(q, payload)
+        ]
         for q in dead:
             SSE_SUBSCRIBERS.discard(q)
 
@@ -329,6 +340,13 @@ class H(http.server.BaseHTTPRequestHandler):
     def client_ua(self) -> str:
         return self.headers.get("User-Agent", "")
 
+    def server_host_port(self) -> str:
+        """Return host:port string for the server address."""
+        sa = self.server.server_address
+        if isinstance(sa, tuple) and len(sa) >= 2:
+            return f"{sa[0]}:{sa[1]}"
+        return "localhost:0"
+
     def api_requires_token(self) -> bool:
         ip = self.client_ip()
         if rate_limited(ip):
@@ -338,8 +356,8 @@ class H(http.server.BaseHTTPRequestHandler):
             self.sendj({"error": "Missing or invalid token"}, 401)
             return False
         with TOKEN_LOCK:
-            global TOKEN_REQUEST_COUNT
-            TOKEN_REQUEST_COUNT += 1
+            global TOKEN_REQUEST_COUNT  # noqa: PLW0603
+            TOKEN_REQUEST_COUNT += 1  # noqa: PLW0603
             if TOKEN_REQUEST_COUNT >= 1000:
                 rotate_token()
         return True
@@ -351,7 +369,8 @@ class H(http.server.BaseHTTPRequestHandler):
         return json.loads(self.rfile.read(n) or b"{}")
 
     def host_ok(self) -> bool:
-        port = self.server.server_address[1]
+        sa = self.server.server_address
+        port = sa[1] if isinstance(sa, tuple) and len(sa) >= 2 else 0
         return self.headers.get("Host", "") in {
             f"127.0.0.1:{port}",
             f"localhost:{port}",
@@ -363,9 +382,8 @@ class H(http.server.BaseHTTPRequestHandler):
             self.sendj({"error": "Invalid Host header"}, 403)
             return
         u = urllib.parse.urlparse(self.path)
-        if u.path.startswith("/api/") and u.path != "/api/stream":
-            if not self.api_requires_token():
-                return
+        if u.path.startswith("/api/") and u.path != "/api/stream" and not self.api_requires_token():
+            return
         try:
             if u.path == "/":
                 b = HTML_PATH.read_bytes().replace(b"__TOKEN__", TOKEN.encode())
@@ -440,9 +458,16 @@ class H(http.server.BaseHTTPRequestHandler):
             self.sendj({"error": "Invalid Host header"}, 403)
             return
         origin = self.headers.get("Origin")
+        sa = self.server.server_address
+        if isinstance(sa, tuple) and len(sa) >= 2:
+            host = str(sa[0])
+            port = int(sa[1])
+        else:
+            host = "localhost"
+            port = 0
         if origin and urllib.parse.urlparse(origin).netloc not in {
-            f"{self.server.server_address[0]}:{self.server.server_address[1]}",
-            f"localhost:{self.server.server_address[1]}",
+            f"{host}:{port}",
+            f"localhost:{port}",
         }:
             self.sendj({"error": "Cross-origin request rejected"}, 403)
             return
@@ -485,6 +510,7 @@ class H(http.server.BaseHTTPRequestHandler):
                     job = JOBS.get(jid)
                     if not p or not job:
                         raise ValueError("No running job with that id")
+                    assert p is not None
                     job["cancelled"] = True
                     p.terminate()
                     audit("cancel", {"job": jid}, ip, ua)
@@ -493,25 +519,25 @@ class H(http.server.BaseHTTPRequestHandler):
                     t = d.get("task")
                     if t not in TASKS:
                         raise ValueError("Invalid task")
-                    p = subprocess.run(
+                    plan_proc = subprocess.run(
                         [os.getenv("PYTHON", "python3"), str(ROOT / "scripts/router.py"), "plan", "--task", t],
                         cwd=ROOT, capture_output=True, text=True, timeout=30, check=False,
                     )
                     audit("plan", {"task": t}, ip, ua)
-                    self.sendj({"output": p.stdout + p.stderr, "exit_code": p.returncode})
+                    self.sendj({"output": (plan_proc.stdout or "") + (plan_proc.stderr or ""), "exit_code": plan_proc.returncode})
                 elif path == "/api/task-config":
                     t = d.get("task")
                     ms = d.get("models")
                     if t not in TASKS or not isinstance(ms, list) or len(ms) > 100:
                         raise ValueError("Invalid task or model list")
-                    clean: list[str] = []
+                    clean_list: list[str] = []
                     for m in ms:
                         if not isinstance(m, str) or not m.strip() or len(m) > 200 or any(c.isspace() for c in m):
                             raise ValueError("Invalid model ID")
-                        if m not in clean:
-                            clean.append(m)
-                    atomic_write_text(CONFIG / (t + ".txt"), "\n".join(clean) + ("\n" if clean else ""))
-                    audit("task-config", {"task": t, "models": clean}, ip, ua)
+                        if m not in clean_list:
+                            clean_list.append(m)
+                    atomic_write_text(CONFIG / (t + ".txt"), "\n".join(clean_list) + ("\n" if clean_list else ""))
+                    audit("task-config", {"task": t, "models": clean_list}, ip, ua)
                     self.sendj({"saved": True})
                 elif path in ("/api/reset-circuits", "/api/reset-keys"):
                     f = STATE / ("circuits.json" if path.endswith("circuits") else "key-pools.json")
@@ -535,55 +561,56 @@ class H(http.server.BaseHTTPRequestHandler):
                 # pydantic validation
                 if path == "/api/run":
                     try:
-                        req = RunRequest(**d)
+                        run_req = RunRequest(**d)
                     except ValidationError as ve:
                         self.sendj({"error": ve.errors()}, 400)
                         return
-                    j = start_job({"task": req.task, "prompt": req.prompt, "model": req.model,
-                                   "max_models": req.max_models, "timeout": req.timeout})
-                    audit("run", {"task": req.task, "job": j["id"]}, ip, ua)
+                    j = start_job({"task": run_req.task, "prompt": run_req.prompt, "model": run_req.model,
+                                   "max_models": run_req.max_models, "timeout": run_req.timeout})
+                    audit("run", {"task": run_req.task, "job": j["id"]}, ip, ua)
                     self.sendj(j, 202)
                 elif path == "/api/cancel":
                     try:
-                        req = CancelRequest(**d)
+                        cancel_req = CancelRequest(**d)
                     except ValidationError as ve:
                         self.sendj({"error": ve.errors()}, 400)
                         return
-                    jid = req.id
-                    p = PROCS.get(jid)
-                    job = JOBS.get(jid)
+                    cancel_id = cancel_req.id
+                    p = PROCS.get(cancel_id)
+                    job = JOBS.get(cancel_id)
                     if not p or not job:
                         raise ValueError("No running job with that id")
+                    assert p is not None
                     job["cancelled"] = True
                     p.terminate()
-                    audit("cancel", {"job": jid}, ip, ua)
+                    audit("cancel", {"job": cancel_id}, ip, ua)
                     self.sendj({"message": "Cancel requested"})
                 elif path == "/api/plan":
                     t = d.get("task")
                     if t not in TASKS:
                         raise ValueError("Invalid task")
-                    p = subprocess.run(
+                    plan_proc = subprocess.run(
                         [os.getenv("PYTHON", "python3"), str(ROOT / "scripts/router.py"), "plan", "--task", t],
                         cwd=ROOT, capture_output=True, text=True, timeout=30, check=False,
                     )
                     audit("plan", {"task": t}, ip, ua)
-                    self.sendj({"output": p.stdout + p.stderr, "exit_code": p.returncode})
+                    self.sendj({"output": (plan_proc.stdout or "") + (plan_proc.stderr or ""), "exit_code": plan_proc.returncode})
                 elif path == "/api/task-config":
                     try:
-                        req = TaskConfigRequest(**d)
+                        task_config_req = TaskConfigRequest(**d)
                     except ValidationError as ve:
                         self.sendj({"error": ve.errors()}, 400)
                         return
-                    if req.task not in TASKS:
+                    if task_config_req.task not in TASKS:
                         raise ValueError("Invalid task")
                     clean: list[str] = []
-                    for m in req.models:
+                    for m in task_config_req.models:
                         if not isinstance(m, str) or not m.strip() or len(m) > 200 or any(c.isspace() for c in m):
                             raise ValueError("Invalid model ID")
                         if m not in clean:
                             clean.append(m)
-                    atomic_write_text(CONFIG / (req.task + ".txt"), "\n".join(clean) + ("\n" if clean else ""))
-                    audit("task-config", {"task": req.task, "models": clean}, ip, ua)
+                    atomic_write_text(CONFIG / (task_config_req.task + ".txt"), "\n".join(clean) + ("\n" if clean else ""))
+                    audit("task-config", {"task": task_config_req.task, "models": clean}, ip, ua)
                     self.sendj({"saved": True})
                 elif path in ("/api/reset-circuits", "/api/reset-keys"):
                     f = STATE / ("circuits.json" if path.endswith("circuits") else "key-pools.json")
@@ -596,12 +623,12 @@ class H(http.server.BaseHTTPRequestHandler):
                     self.sendj({"message": "Token regenerated"})
                 elif path == "/api/settings":
                     try:
-                        req = SettingsRequest(**d)
+                        settings_req = SettingsRequest(**d)
                     except ValidationError as ve:
                         self.sendj({"error": ve.errors()}, 400)
                         return
-                    save_settings(req.settings)
-                    audit("settings", req.settings, ip, ua)
+                    save_settings(settings_req.settings)
+                    audit("settings", settings_req.settings, ip, ua)
                     self.sendj({"saved": True})
                 else:
                     self.send_error(404)

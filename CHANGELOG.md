@@ -44,7 +44,12 @@ Single source of truth merging the five archived releases (v1 → v5). v5 was th
 - Dashboard hardening: rate limiting (token bucket), IP/UA in audit log, token rotation after 1000 requests, `/api/settings` persistence
 - Pydantic request/response schemas with manual fallback for CI (no pydantic install required)
 - Dual-write state: JSONL + SQLite for backward compatibility
-- Expanded tests: 16 -> 67 (SSE, token regen, audit log, settings, export, sorting/filtering/pagination)
+- Expanded tests: 16 -> 77 (SSE, token regen, audit log, settings, export, sorting/filtering/pagination, security regression)
+
+## Security fixes (hardening)
+- Command injection neutralized: `quality_gate.py` no longer uses `shell=True`; `TEST_COMMAND` parsed with `shlex.split()` and executed via `subprocess.run(cmd, shell=False)`
+- SSRF neutralized: all `urllib.request.urlopen` calls in `router.py` validate URL scheme (`http://`/`https://` only); `file://`, `ftp://`, `gopher://` rejected via `_validate_url()`
+- Bandit: HIGH=0 (was 1), MEDIUM=3 (mitigated), LOW=14 (accepted/false positive)
 
 ## Field-test pass (real opencode v2.2.7 logs, WSL2)
 - Classifier recognises real errors that fell through to `execution_error`: `Insufficient balance. Top up…`, `Purchase pre-paid credits…` (→ `quota_exhausted`) and `No cookie auth credentials found` (→ `authentication`). Captured as test fixtures.

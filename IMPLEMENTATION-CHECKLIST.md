@@ -1,3 +1,5 @@
+# IMPLEMENTATION-CHECKLIST.md
+
 # Implementation Checklist
 
 ## Refactor — all 12 items (MASTER.md)
@@ -7,7 +9,7 @@
 - [x] scripts/config.py — centralized Config dataclass
 - [x] scripts/logging_setup.py — shared logging
 - [x] scripts/router.py — type hints, logging, module-level patchable state
-- [x] tests pass (67 total)
+- [x] tests pass (77 total)
 
 ### Phase 2: CLI subprocess → opencode v2 API ✅
 - [x] scripts/router.py: route() calls POST /api/runs (v2 API), parses NDJSON when OPENCODE_SERVER set
@@ -40,12 +42,14 @@
 - [ ] aiohttp or asyncio http.server (ThreadingHTTPServer works fine; optional)
 
 ### Phase 8: Expanded tests ✅
-- [x] 67 tests total (up from 64)
+- [x] 77 tests total (up from 64)
 - [x] SSE /api/stream connection + broadcast (tested via server)
 - [x] POST /api/token/regen invalidating old token
 - [x] GET /api/audit entries after mutating calls
 - [x] GET/POST /api/settings
 - [x] Dashboard auth, headers, Host guard, cancel
+- [x] Security regression: command injection neutralization
+- [x] Security regression: SSRF URL scheme validation
 
 ## Docs ✅
 - [x] AGENTS.md, CLAUDE.md, CODEX.md, GEMINI.md
@@ -57,6 +61,9 @@
 
 ## Verification ✅
 - [x] python -m py_compile scripts/*.py dashboard/server.py — clean
-- [x] python -m unittest discover -s tests -v — 67 tests, OK
+- [x] python -m unittest discover -s tests -v — 77 tests, OK
 - [x] No committed __pycache__ or .pyc files
 - [x] Rate limiting, token rotation, audit log all functional
+- [x] CI passes on Python 3.10–3.13
+- [x] Security: command injection neutralized (shell=False)
+- [x] Security: SSRF neutralized (url scheme validation http/https only)

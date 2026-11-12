@@ -7,7 +7,7 @@ All 12 refactor areas are complete and merged into `main`.
 - scripts/config.py — centralized Config dataclass
 - scripts/logging_setup.py — shared logging
 - scripts/router.py — type hints, logging, module-level patchable state
-- 67 tests pass
+- 77 tests pass
 
 ## Phase 2: CLI subprocess → opencode v2 API ✅
 - scripts/router.py: route() calls POST /api/runs (v2 API), parses NDJSON when OPENCODE_SERVER set
@@ -40,12 +40,13 @@ All 12 refactor areas are complete and merged into `main`.
 - aiohttp or asyncio http.server (ThreadingHTTPServer works fine; optional)
 
 ## Phase 8: Expanded tests ✅
-- 67 tests total (up from 64)
+- 77 tests total (up from 64)
 - SSE /api/stream connection + broadcast (tested via server)
 - POST /api/token/regen invalidating old token
 - GET /api/audit entries after mutating calls
 - GET/POST /api/settings
 - Dashboard auth, headers, Host guard, cancel
+- Security regression tests: command injection neutralization, SSRF URL scheme validation
 
 ## Docs ✅
 - AGENTS.md, CLAUDE.md, CODEX.md, GEMINI.md
@@ -57,7 +58,9 @@ All 12 refactor areas are complete and merged into `main`.
 
 ## Verification ✅
 - python -m py_compile scripts/*.py dashboard/server.py — clean
-- python -m unittest discover -s tests -v — 67 tests, OK
+- python -m unittest discover -s tests -v — 77 tests, OK
 - No committed __pycache__ or .pyc files
 - Rate limiting, token rotation, audit log all functional
 - CI passes on Python 3.10–3.13
+- bandit: HIGH=0, MEDIUM=3 (mitigated), LOW=14 (accepted/false positive)
+- pip-audit: 25 dependencies flagged (environment-level, not code bugs)

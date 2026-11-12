@@ -9,6 +9,8 @@
 - Hardened control panel (token auth, CSP, SSE, job cancel, export)
 - CI matrix (Python 3.10–3.13), Dependabot
 - Classifier fix: `500–504` only for outages
+- Command injection fix: `quality_gate.py` no longer uses `shell=True`
+- SSRF fix: `urlopen` restricted to `http://` / `https://` schemes
 
 ## Completed (full refactor per MASTER.md)
 
@@ -17,7 +19,7 @@
 3. Type hints + logging throughout
 4. Frontend modularity (CSS + JS split)
 5. SQLite state instead of JSONL (dual-write for backward compat)
-6. Expanded test coverage (67 tests)
+6. Expanded test coverage (77 tests)
 7. Dashboard hardening: rate limiting, IP/UA audit log, token rotation, settings persistence
 8. Pydantic validation with CI-safe manual fallback
 

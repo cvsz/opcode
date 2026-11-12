@@ -19,9 +19,8 @@ import uuid
 from typing import Any
 
 from scripts import config as cfg_mod
-from scripts import logging_setup
-from scripts import state as state_mod
 from scripts import db as db_mod
+from scripts import logging_setup
 
 log = logging_setup.setup_logging(cfg_mod.Config.from_env().log_level, __name__)
 
@@ -160,10 +159,25 @@ def v2_api_password() -> str | None:
     return os.getenv("OPENCODE_PASSWORD")
 
 
+def _validate_url(url: str) -> str:
+    """Validate that a URL uses only http:// or https:// scheme.
+
+    Prevents SSRF via file://, ftp://, gopher://, or other custom schemes.
+    The OPENCODE_SERVER env var is operator-controlled, but we validate it
+    defensively in case it is influenced by untrusted input.
+    """
+    parsed = urllib.parse.urlparse(url)
+    if parsed.scheme not in ("http", "https"):
+        raise ValueError(f"Unsupported URL scheme '{parsed.scheme}' in {url!r}; only http/https allowed.")
+    if not parsed.hostname:
+        raise ValueError(f"URL {url!r} has no hostname.")
+    return url
+
+
 def v2_runs_create(model: str, prompt: str, auto: bool, archived: bool,
-                   timeout: int, password: str | None = None) -> tuple[str, list[dict]]:
+                   timeout: int | None, password: str | None = None) -> tuple[str, list[dict]]:
     """POST /api/runs. Returns (run_id, events) parsed from NDJSON stream."""
-    url = v2_api_base().rstrip("/") + "/api/runs"
+    url = _validate_url(v2_api_base().rstrip("/") + "/api/runs")
     body = json.dumps({
         "model": model,
         "prompt": prompt,
@@ -177,7 +191,7 @@ def v2_runs_create(model: str, prompt: str, auto: bool, archived: bool,
     events: list[dict] = []
     run_id = ""
     try:
-        with urllib.request.urlopen(req, timeout=timeout if timeout > 0 else None) as resp:
+        with urllib.request.urlopen(req, timeout=timeout if timeout is not None and timeout > 0 else None) as resp:
             for raw in resp:
                 line = raw.decode("utf-8", errors="replace").strip()
                 if not line:
@@ -203,7 +217,7 @@ def v2_runs_create(model: str, prompt: str, auto: bool, archived: bool,
 
 def v2_runs_get(run_id: str, password: str | None = None) -> dict:
     """GET /api/runs/{id}. Returns run status."""
-    url = v2_api_base().rstrip("/") + f"/api/runs/{urllib.parse.quote(run_id)}"
+    url = _validate_url(v2_api_base().rstrip("/") + f"/api/runs/{urllib.parse.quote(run_id)}")
     req = urllib.request.Request(url, method="GET")
     if password:
         req.add_header("Authorization", f"Bearer {password}")
@@ -218,7 +232,7 @@ def v2_runs_get(run_id: str, password: str | None = None) -> dict:
 
 def v2_runs_cancel(run_id: str, password: str | None = None) -> None:
     """DELETE /api/runs/{id}."""
-    url = v2_api_base().rstrip("/") + f"/api/runs/{urllib.parse.quote(run_id)}"
+    url = _validate_url(v2_api_base().rstrip("/") + f"/api/runs/{urllib.parse.quote(run_id)}")
     req = urllib.request.Request(url, method="DELETE")
     if password:
         req.add_header("Authorization", f"Bearer {password}")
@@ -245,7 +259,6 @@ def classify_from_events(events: list[dict]) -> tuple[str, str | None, float, in
         elif etype == "step_finish":
             reason = part.get("reason", "")
             tokens = part.get("tokens", {}) or {}
-            cost = part.get("cost", 0)
             t = tokens or {}
             duration_s = float(t.get("duration_s", 0) or 0)
             if reason == "stop":
@@ -379,6 +392,7 @@ def key_candidates(provider: str) -> list[dict[str, Any]]:
     providers = load_json(CONFIG / "providers.json", {"providers": {}}).get("providers", {})
     provider_cfg = providers.get(provider)
     if not provider_cfg:
+        # nosec: B105 - None is Python's None value, not a hardcoded password string.
         return [{"slot": 0, "env_name": None, "secret": None, "auth_env": None}]
     auth_env = provider_cfg["auth_env"]
     pool = load_json(STATE / "key-pools.json", {}).get(provider, {})
@@ -467,7 +481,6 @@ def emit(obj: dict[str, Any]) -> None:
 
 
 def route(args: Any, config_obj: cfg_mod.Config | None = None) -> int:
-    cfg = config_obj or cfg_mod.Config.from_env()
     if args.max_models < 0 or args.timeout < 0:
         raise ValueError("limits must be non-negative")
     if not isinstance(args.prompt, str) or not args.prompt.strip():
@@ -492,6 +505,7 @@ def route(args: Any, config_obj: cfg_mod.Config | None = None) -> int:
         keys = key_candidates(provider)
         if not keys and not REQUIRE_ENV_KEY:
             # No env keys: use credentials stored by `opencode auth login` (or key-less free models).
+            # nosec: B105 - None is Python's None value, not a hardcoded password string.
             keys = [{"slot": 0, "env_name": None, "secret": None, "auth_env": None}]
         if not keys:
             log.info("no API key configured for provider=%s; skipping %s", provider, model)

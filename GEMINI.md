@@ -20,6 +20,7 @@ Multi-provider LLM router with:
 - `python scripts/router.py plan --task <task>`
 - `python scripts/router.py check`
 - `python dashboard/server.py` (control panel on http://127.0.0.1:8765)
+- `make all` — start dashboard + run quality gate + run tests (one command)
 
 ## Testing
 
@@ -27,7 +28,7 @@ Multi-provider LLM router with:
 python -m unittest discover -s tests -v
 ```
 
-67 tests covering router classification, circuit breakers, key pools, dashboard auth, SSE, audit log, settings, export, sorting/filtering/pagination, and classifier regression.
+77 tests covering router classification, circuit breakers, key pools, dashboard auth, SSE, audit log, settings, export, sorting/filtering/pagination, classifier regression, and security regression (command injection neutralization, SSRF URL scheme validation).
 
 ## Key invariants
 
@@ -37,3 +38,5 @@ python -m unittest discover -s tests -v
 - Circuit opens after threshold failures; quota opens after 1
 - Pydantic validation with manual fallback; logging module throughout (no `print()`)
 - Type hints throughout; modular frontend (HTML/CSS/JS split)
+- Security: `TEST_COMMAND` executed without `shell=True`
+- Security: `urlopen` restricted to `http://` / `https://` schemes

@@ -10,6 +10,7 @@ import pathlib
 import subprocess
 import sys
 import uuid
+from typing import Any
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 ROUTER = ROOT / "scripts/router.py"
@@ -85,7 +86,7 @@ def main() -> int:
     if not ROUTER.is_file():
         print(f"Router not found: {ROUTER}", file=sys.stderr); return 2
     run_id = str(uuid.uuid4())
-    report = {"run_id": run_id, "request": request, "started_at": datetime.datetime.now(datetime.timezone.utc).isoformat(), "roles": []}
+    report: dict[str, Any] = {"run_id": run_id, "request": request, "started_at": datetime.datetime.now(datetime.timezone.utc).isoformat(), "roles": []}
     context = ""
     limit = context_limit()
     for name, task, prompt in ROLES:

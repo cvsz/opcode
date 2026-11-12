@@ -1,4 +1,10 @@
-import http.client, importlib.util, json, pathlib, threading, unittest, http.server
+import http.client
+import http.server
+import importlib.util
+import json
+import pathlib
+import threading
+import unittest
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 spec = importlib.util.spec_from_file_location("dash", ROOT / "dashboard/server.py")

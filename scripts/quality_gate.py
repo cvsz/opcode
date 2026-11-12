@@ -8,6 +8,7 @@ import json
 import math
 import os
 import pathlib
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -90,7 +91,13 @@ def main() -> int:
     print(f"[quality] Running test command: {test_command}", flush=True)
     timed_out = False
     try:
-        result = subprocess.run(test_command, shell=True, cwd=ROOT, check=False, timeout=timeout)
+        # Parse into a list and avoid shell=True to prevent command injection.
+        # TEST_COMMAND comes from an environment variable; shell=True would allow
+        # arbitrary command injection (e.g. TEST_COMMAND="rm -rf /; python -m pytest").
+        cmd = shlex.split(test_command)
+        if not cmd:
+            raise ValueError("TEST_COMMAND parsed to an empty command list.")
+        result = subprocess.run(cmd, cwd=ROOT, check=False, timeout=timeout)
         test_exit_code = result.returncode
     except subprocess.TimeoutExpired:
         timed_out = True
@@ -98,6 +105,9 @@ def main() -> int:
     except OSError as exc:
         print(f"QUALITY GATE FAILED: could not run test command: {exc}", file=sys.stderr)
         test_exit_code = 127
+    except ValueError as exc:
+        print(f"QUALITY GATE FAILED: invalid test command: {exc}", file=sys.stderr)
+        test_exit_code = 2
 
     record = {
         "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(),

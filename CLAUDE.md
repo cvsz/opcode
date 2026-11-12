@@ -18,15 +18,22 @@ This is a local multi-API-key router with circuit breakers, telemetry, and a har
 - `scripts/key_pool.py`, `optimizer.py`, `orchestrator.py`, `quality_gate.py` — Supporting CLIs
 - `config/*.txt` — Per-task ordered model lists
 - `state/` — Runtime state (JSONL + JSON + SQLite)
-- `tests/` — unittest suite (67 tests)
+- `tests/` — unittest suite (77 tests)
+- `Makefile` — All-in-one control: start/stop/status/restart, test/lint/type-check/security-scan/ci-all
 
 ## Common commands
 
 ```bash
 python dashboard/server.py                    # start control panel (http://127.0.0.1:8765)
-python -m unittest discover -s tests -v       # run tests (67 tests)
+make start                                    # start dashboard in background
+make stop                                     # stop all services
+make status                                   # show service status
+python -m unittest discover -s tests -v       # run tests (77 tests)
 python -m py_compile scripts/*.py dashboard/server.py
-shellcheck scripts/load-keys.sh
+make lint                                     # ruff check
+make type-check                               # mypy
+make security-scan                            # bandit + pip-audit
+make ci-all                                   # lint + type-check + security + tests
 python scripts/router.py route --task code --prompt "..."
 python scripts/router.py plan --task code
 python scripts/router.py check
@@ -43,10 +50,13 @@ python scripts/router.py check
 - Secrets never logged or printed; `last_line()` redacts secrets
 - Pydantic request/response schemas with manual fallback for CI (no pydantic install required)
 - SQLite state (dual-write with JSONL for backward compatibility)
+- Security: `TEST_COMMAND` executed without `shell=True` — command injection neutralized
+- Security: `urlopen` restricted to `http://` / `https://` schemes only — SSRF neutralized
 
 ## When making changes
 
 1. Run `python -m py_compile scripts/*.py dashboard/server.py`
 2. Run `python -m unittest discover -s tests -v`
-3. Update `CHANGELOG.md` for user-visible changes
-4. Keep dashboard modular: index.html (structure), style.css (styles), app.js (logic)
+3. Run `make lint type-check security-scan`
+4. Update `CHANGELOG.md` for user-visible changes
+5. Keep dashboard modular: index.html (structure), style.css (styles), app.js (logic)
