@@ -3,6 +3,7 @@
 All environment-driven settings live here with defaults and validation.
 Load once at startup via Config.from_env().
 """
+
 from __future__ import annotations
 
 import os
@@ -39,6 +40,8 @@ class Config:
 
     @classmethod
     def from_env(cls) -> Config:
+        """Build Config from environment variables with sensible defaults."""
+
         def _int_env(name: str, default: int) -> int:
             try:
                 return int(os.getenv(name, str(default)))
