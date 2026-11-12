@@ -46,6 +46,15 @@ Single source of truth merging the five archived releases (v1 → v5). v5 was th
 - Dual-write state: JSONL + SQLite for backward compatibility
 - Expanded tests: 16 -> 77 (SSE, token regen, audit log, settings, export, sorting/filtering/pagination, security regression)
 
+## Enterprise final pass (2026-11-12)
+- **Log rotation**: `scripts/logging_setup.py` adds `RotatingFileHandler` support; dashboard configurable via `--log-file`, `--log-max-bytes`, `--log-backup-count`; correlation IDs (`request_id`) propagate through router → dashboard → audit log → SQLite.
+- **Structured NDJSON parsing**: `classify_from_ndjson()` handles `opencode run --format json` output; graceful handling of malformed/incomplete lines; enables `--format json` path via `OPENCODE_FORMAT_JSON=1`.
+- **Enhanced `/api/health`**: deep checks for `opencode_serve_reachable`, `circuits_healthy`, `keys_healthy`, `open_circuits`, `total_key_slots`; status `ok`/`degraded`.
+- **Request correlation IDs**: `X-Request-ID` header (auto-generated if missing) included in audit log, SQLite events, and router subprocess via `ROUTER_REQUEST_ID` env var.
+- **Integration test suite**: `tests/test_integration.py` covers full pipeline (dashboard → router → state), circuit breaker, key pool, audit log.
+- **Test suite expanded**: 79 → 96 tests (NDJSON classify, correlation IDs, integration).
+- **Documentation sync**: README, SECURITY, AGENTS, ROADMAP, IMPLEMENTATION-CHECKLIST, MASTER updated.
+
 ## Enterprise hardening (2026-11-12)
 - **Structured logging**: `LOG_FORMAT=json` emits one JSON object per line from router and dashboard (`scripts/logging_setup.py` `JsonFormatter`); extra fields preserved.
 - **SQLite WAL + per-statement connections**: `scripts/db.py` refactored to connection-per-operation with `journal_mode=WAL`, `synchronous=NORMAL`, 30 s busy timeout; verified lossless under 10-thread concurrent writes (`tests/test_sqlite_concurrency.py`).

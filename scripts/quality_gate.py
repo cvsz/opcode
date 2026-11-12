@@ -9,7 +9,7 @@ import math
 import os
 import pathlib
 import shlex
-import subprocess
+import subprocess  # nosec: B404 — intentional; quality gate runs TEST_COMMAND via shlex.split with shell=False  # nosec B404 - subprocess used for controlled CLI calls with shell=False
 import sys
 import tempfile
 
@@ -97,7 +97,7 @@ def main() -> int:
         cmd = shlex.split(test_command)
         if not cmd:
             raise ValueError("TEST_COMMAND parsed to an empty command list.")
-        result = subprocess.run(cmd, cwd=ROOT, check=False, timeout=timeout)
+        result = subprocess.run(cmd, cwd=ROOT, check=False, timeout=timeout)  # nosec: B603 — TEST_COMMAND parsed via shlex.split, shell=False  # nosec B603 - controlled command list from shlex.split, shell=False
         test_exit_code = result.returncode
     except subprocess.TimeoutExpired:
         timed_out = True

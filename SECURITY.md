@@ -11,8 +11,9 @@ The control panel is a **local-only** tool. It binds to `127.0.0.1` by default a
 - CSP with `frame-ancestors 'none'`, `X-Frame-Options: DENY`, `nosniff`, `Referrer-Policy`
 - Rate limiting (token bucket, 30 req/60s per IP) on mutating endpoints
 - Pydantic request schemas bounding prompt/task/model/limit values before job launch
-- Audit log at `state/audit.jsonl` records action, IP, user agent for every mutating endpoint
+- Audit log at `state/audit.jsonl` records action, IP, user agent, and **correlation ID** (`request_id`) for every mutating endpoint
 - Token rotation after 1000 requests or via `POST /api/token/regen`; old tokens immediately invalidated
+- **Log rotation** via `RotatingFileHandler` (configurable max bytes, backup count); logs include correlation IDs for request tracing
 
 **Never** expose the dashboard directly to the internet. Use an authenticated reverse proxy if remote access is needed.
 
@@ -29,6 +30,8 @@ The control panel is a **local-only** tool. It binds to `127.0.0.1` by default a
 - **SSRF (MEDIUM)**: All `urllib.request.urlopen` calls in `router.py` now validate the URL scheme (`http://` / `https://` only) via `_validate_url()`. `file://`, `ftp://`, `gopher://` etc. are rejected. Regression test added.
 - **Request schema validation (NEW)**: `RunRequest` Pydantic model bounds every field — prompt ≤1,000,000 chars, task ≤50 chars, model ≤200 chars, `max_models` 0–100, `timeout` 0–3600 — so oversized or out-of-range payloads are rejected with 400 before reaching the shell. `scripts/security_fuzzer.py` verifies the server answers 4xx and never crashes on adversarial payloads.
 - **SQLite concurrency (NEW)**: `scripts/db.py` opens a per-statement connection with `journal_mode=WAL`, `synchronous=NORMAL`, and a 30 s busy timeout; 10 threads × 50 writes verified lossless in `tests/test_sqlite_concurrency.py`.
+- **Request correlation IDs (NEW)**: `X-Request-ID` header (auto-generated if missing) propagated through dashboard audit log, SQLite events, and router subprocess via `ROUTER_REQUEST_ID` env var. Enables end-to-end request tracing.
+- **Log rotation (NEW)**: `scripts/logging_setup.py` provides `RotatingFileHandler` support; dashboard configurable via `--log-file`, `--log-max-bytes`, `--log-backup-count` CLI args.
 - **B105 false positives**: `None` values in `key_candidates()` marked with `# nosec` — they are Python `None`, not hardcoded passwords.
 
 ## Reporting

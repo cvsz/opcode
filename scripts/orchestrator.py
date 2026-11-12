@@ -7,7 +7,7 @@ import datetime
 import json
 import os
 import pathlib
-import subprocess
+import subprocess  # nosec: B404 — intentional; orchestrator runs subprocess with shell=False and validated list args only  # nosec B404 - subprocess used for controlled CLI calls with shell=False
 import sys
 import uuid
 from typing import Any
@@ -70,7 +70,7 @@ INSTRUCTIONS:
 
 Record evidence. Distinguish verified facts from assumptions. Do not claim completion without evidence."""
     print(f"\n=== ROLE: {name} | TASK: {task} ===", flush=True)
-    proc = subprocess.run(
+    proc = subprocess.run(  # nosec B603 - controlled command list, shell=False
         [sys.executable, str(ROUTER), "route", "--task", task, "--prompt", prompt,
          "--max-models", os.getenv("ROLE_MAX_MODELS", "2"),
          "--timeout", role_timeout(name)] + (["--auto"] if name in AUTO_ROLES else []),

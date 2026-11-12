@@ -77,6 +77,13 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for the contribution workflow and [GOVERN
 ## Structured logging
 Set `LOG_FORMAT=json` to emit one JSON object per log line (`timestamp`, `level`, `name`, `message`, plus any `extra` fields) from both `scripts/router.py` and `dashboard/server.py` — ready for ingestion by journald, Loki, or any JSON log collector. Default is human-readable text.
 
+## Log rotation
+Dashboard logs can be rotated using `RotatingFileHandler`. Configure via:
+- `--log-file` (default: `state/dashboard.log`)
+- `--log-max-bytes` (default: 5MB)
+- `--log-backup-count` (default: 5)
+Logs include correlation IDs (`request_id`) for request tracing across router → dashboard → audit log.
+
 ## Install
 ```bash
 unzip opencode-free-router.zip
@@ -240,7 +247,7 @@ All endpoints require `X-Router-Token` header (constant-time compare) except SSE
 |---|---|---|
 | `GET /` | GET | Serve control panel HTML with injected token |
 | `GET /api/summary` | GET | Telemetry summary: events, models, circuits, keys, jobs |
-| `GET /api/health` | GET | Deep health: status, version, key-pool slots, circuit state (for external monitors) |
+| `GET /api/health` | GET | Deep health: status (ok/degraded), version, `opencode_serve_reachable`, `circuits_healthy`, `open_circuits`, `keys_healthy`, `total_key_slots`, key_pool, circuits (for external monitors) |
 | `GET /api/stream` | GET | SSE real-time updates |
 | `GET /api/task-config?task=<t>` | GET | Ordered model list for a task |
 | `GET /api/catalogue` | GET | Installed model catalogue via `opencode models` |
@@ -285,7 +292,7 @@ The router can call `opencode serve`'s HTTP API when `OPENCODE_SERVER` is set (r
 
 ## Testing
 ```bash
-python -m unittest discover -s tests -v          # 79 tests (incl. JSON logging, SQLite concurrency)
+python -m unittest discover -s tests -v          # 96 tests (incl. JSON logging, SQLite concurrency, NDJSON classify, correlation IDs, integration)
 python -m py_compile scripts/*.py dashboard/server.py
 shellcheck scripts/load-keys.sh
 make -n help test keys optimize >/dev/null

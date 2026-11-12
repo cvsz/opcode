@@ -26,7 +26,7 @@ scripts/           Router, key pool, optimizer, orchestrator, quality gate, stat
 config/            Per-task ordered model lists (code, review, fast, vision, general)
 state/             Runtime state (events.jsonl, circuits.json, key-pools.json, audit.jsonl,
                    dashboard-settings.json, router.db SQLite WAL)
-tests/             Python unittest suite (79 tests incl. JSON logging + SQLite concurrency)
+tests/             Python unittest suite (96 tests incl. JSON logging + SQLite concurrency + NDJSON classify + correlation IDs + integration)
 .github/           CI workflow, Dependabot, issue templates
 docs/              Plans, specs, and Final-Report.md
 Makefile           All-in-one control: start/stop/status/restart, test/lint/type-check/security-scan/ci-all
@@ -98,6 +98,14 @@ make backend-lint backend-type-check backend-security
 | `DASHBOARD_PORT` | `8765` | Dashboard bind port |
 | `DASHBOARD_TOKEN_BYTES` | `24` | API token length |
 | `LOG_LEVEL` | `INFO` | Logging level |
+| `LOG_FORMAT` | `text` | `json` for structured JSON logging (router + dashboard) |
+| `OPENCODE_MODELS_CACHE_TTL` | `30` | seconds to cache `opencode models` output |
+| `CIRCUIT_CACHE_TTL` / `KEY_POOL_CACHE_TTL` | `5` | seconds to cache circuit / key-pool state reads |
+| `OPENCODE_SERVER` | unset | if set, router calls `opencode serve` v2 API (`/api/runs`) instead of CLI subprocess |
+| `OPENCODE_FORMAT_JSON` | `0` | `1` enables `opencode run --format json` for structured NDJSON output |
+| `DASHBOARD_LOG_FILE` | `state/dashboard.log` | Dashboard log file path |
+| `DASHBOARD_LOG_MAX_BYTES` | `5000000` | Max bytes per log file before rotation |
+| `DASHBOARD_LOG_BACKUP_COUNT` | `5` | Number of backup log files to keep |
 
 ## Testing
 
@@ -105,7 +113,7 @@ make backend-lint backend-type-check backend-security
 python -m unittest discover -s tests -v
 ```
 
-77 tests cover router classification, circuit breakers, key pools, dashboard auth, SSE, audit log, settings, export, sorting/filtering/pagination, classifier regression, and security regression (command injection neutralization, SSRF URL scheme validation).
+96 tests cover router classification, circuit breakers, key pools, dashboard auth, SSE, audit log, settings, export, sorting/filtering/pagination, classifier regression, security regression (command injection neutralization, SSRF URL scheme validation), NDJSON classify, correlation IDs, and integration.
 
 ## Linting
 

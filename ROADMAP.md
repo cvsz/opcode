@@ -35,6 +35,16 @@
 - All-in-one Makefile control center (`make all`, `ci-all`, service lifecycle)
 - 79 tests green; ruff, mypy, bandit (HIGH=0) clean
 
+## Completed (enterprise final pass, 2026-11-12)
+
+- **Log rotation**: `RotatingFileHandler` in `logging_setup.py`; dashboard CLI args for log file config
+- **Structured NDJSON parsing**: `classify_from_ndjson()` for `opencode run --format json`; graceful malformed line handling
+- **Enhanced `/api/health`**: deep checks for `opencode_serve_reachable`, `circuits_healthy`, `keys_healthy`, `open_circuits`, `total_key_slots`
+- **Request correlation IDs**: `X-Request-ID` header propagated through audit log, SQLite events, router subprocess
+- **Integration test suite**: `tests/test_integration.py` (full pipeline, circuit breaker, key pool, audit log)
+- **Test suite expanded**: 79 → 96 tests (NDJSON classify, correlation IDs, integration)
+- **Documentation sync**: README, SECURITY, AGENTS, ROADMAP, IMPLEMENTATION-CHECKLIST, MASTER, CHANGELOG updated
+
 ## Planned (optional)
 
 - Real-time SSE dashboard enhancement with job streams

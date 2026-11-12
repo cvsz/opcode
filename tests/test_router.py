@@ -175,6 +175,64 @@ class RouterTests(unittest.TestCase):
                 self.assertGreater((until-router.utcnow()).total_seconds(),router.COOLDOWN+60)
             finally: router.STATE=old
 
+    # --- classify_from_ndjson tests ---
+    def test_classify_from_ndjson_success(self):
+        lines = [
+            '{"type":"step_start","sessionID":"ses_1","part":{}}',
+            '{"type":"text","part":{"text":"Hello world"}}',
+            '{"type":"step_finish","part":{"reason":"stop","tokens":{"duration_s":1.2}}}',
+        ]
+        cat, ans, dur, code = router.classify_from_ndjson(lines)
+        self.assertEqual(cat, "success")
+        self.assertEqual(code, 0)
+        self.assertEqual(ans, "Hello world")
+        self.assertAlmostEqual(dur, 1.2, places=1)
+
+    def test_classify_from_ndjson_error(self):
+        lines = [
+            '{"type":"error","part":{"message":"model not found"}}',
+        ]
+        cat, ans, dur, code = router.classify_from_ndjson(lines)
+        self.assertEqual(cat, "model_unavailable")
+        self.assertEqual(code, 1)
+
+    def test_classify_from_ndjson_malformed_lines_skipped(self):
+        lines = [
+            'not json',
+            '{"type":"step_start","sessionID":"ses_1","part":{}}',
+            'also not json',
+            '{"type":"text","part":{"text":"ok"}}',
+            '{"type":"step_finish","part":{"reason":"stop","tokens":{"duration_s":0.5}}}',
+        ]
+        cat, ans, dur, code = router.classify_from_ndjson(lines)
+        self.assertEqual(cat, "success")
+        self.assertEqual(code, 0)
+        self.assertEqual(ans, "ok")
+
+    def test_classify_from_ndjson_empty_input(self):
+        cat, ans, dur, code = router.classify_from_ndjson([])
+        self.assertEqual(cat, "execution_error")
+        self.assertEqual(code, 1)
+
+    def test_classify_from_ndjson_only_malformed(self):
+        cat, ans, dur, code = router.classify_from_ndjson(["not json", "also not json"])
+        self.assertEqual(cat, "execution_error")
+        self.assertEqual(code, 1)
+
+    def test_classify_from_ndjson_tool_calls_continues(self):
+        lines = [
+            '{"type":"step_start","sessionID":"ses_1","part":{}}',
+            '{"type":"step_finish","part":{"reason":"tool-calls","tokens":{"duration_s":0.1}}}',
+            '{"type":"text","part":{"text":"after tool"}}',
+            '{"type":"step_finish","part":{"reason":"stop","tokens":{"duration_s":1.0}}}',
+        ]
+        cat, ans, dur, code = router.classify_from_ndjson(lines)
+        self.assertEqual(cat, "success")
+        self.assertEqual(code, 0)
+        self.assertEqual(ans, "after tool")
+        self.assertAlmostEqual(dur, 1.0, places=1)
+
+
 @unittest.skipIf(os.name=="nt","needs a POSIX shell")
 class RouteIntegration(unittest.TestCase):
     """Runs the real route() against a fake `opencode` executable."""

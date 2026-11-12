@@ -1,7 +1,7 @@
-# Final Report — OpenCode Free-Model Router Enterprise Hardening
+# Final Report — OpenCode Free-Model Router Enterprise Final Pass
 
 **Date:** 2026-11-12
-**Scope:** Full independent implementation pass: security hardening, performance optimization, observability, validation, documentation, and release workflow.
+**Scope:** Full independent implementation pass: security hardening, performance optimization, observability, validation, documentation, and release workflow — enterprise final pass with log rotation, NDJSON parsing, correlation IDs, enhanced health checks, integration tests.
 
 ---
 
@@ -11,15 +11,15 @@ The OpenCode Free-Model Router was hardened to production/enterprise grade in a 
 
 | Objective | Status | Evidence |
 |---|---|---|
-| Security hardening | ✅ | Bandit High=0, Medium=0 (was Medium=6), ruff clean |
+| Security hardening | ✅ | Bandit High=0, Medium=0, Low=17 (informational), ruff clean |
 | Performance optimization | ✅ | 4-layer TTL caching; `opencode models` subprocess eliminated from hot path |
-| Observability | ✅ | `LOG_FORMAT=json` structured logging + `/api/health` deep-check endpoint |
-| Reliability | ✅ | SQLite WAL mode; 10-thread × 50-write concurrency test lossless |
-| Test suite | ✅ | 79/79 passing (stable across 3 consecutive runs) |
+| Observability | ✅ | `LOG_FORMAT=json` structured logging + `/api/health` deep-check endpoint + log rotation + correlation IDs |
+| Reliability | ✅ | SQLite WAL mode; 10-thread × 50-write concurrency test lossless; log rotation |
+| Test suite | ✅ | 96/96 passing (stable across 3 consecutive runs) |
 | Type safety | ✅ | mypy: no issues in 11 source files |
 | Lint | ✅ | ruff: all checks passed |
 | Pen-test tooling | ✅ | `scripts/security_fuzzer.py` — server answers 4xx, never crashes |
-| Documentation | ✅ | README, SECURITY, AGENTS, CHANGELOG, ROADMAP synced |
+| Documentation | ✅ | README, SECURITY, AGENTS, CHANGELOG, ROADMAP, IMPLEMENTATION-CHECKLIST, MASTER synced |
 | Release workflow | ✅ | GPG-signed branch → PR → dual-account review → merge (see §8) |
 
 ---
@@ -32,41 +32,42 @@ The OpenCode Free-Model Router was hardened to production/enterprise grade in a 
 │   make all / start / stop / status / restart / ci-all / dev      │
 └──────────────┬──────────────────────────────┬───────────────────┘
                │                              │
-      ┌────────▼────────┐            ┌────────▼─────────┐
-      │  scripts/       │            │  dashboard/      │
-      │  router.py      │◄──────────►│  server.py       │
-      │  (failover,     │  SQLite    │  (HTTP API,      │
-      │  breakers,      │  state/    │   SSE, auth,     │
-      │  caches)        │  router.db │   rate limit)    │
-      └────────┬────────┘   (WAL)    └────────┬─────────┘
-               │                              │
-      ┌────────▼──────────────────────────────▼─────────┐
-      │  Shared state layer                              │
-      │  scripts/db.py    SQLite WAL (events, audit,     │
-      │                   circuits, key_pools, settings) │
-      │  scripts/state.py JSONL/JSON dual-write legacy   │
-      └─────────────────────────────────────────────────┘
-               │
-      ┌────────▼────────┐
-      │  OpenCode CLI / │  v2 API (NDJSON) or subprocess
-      │  opencode serve │  provider key pools + cooldowns
-      └─────────────────┘
+       ┌────────▼────────┐            ┌────────▼─────────┐
+       │  scripts/       │            │  dashboard/      │
+       │  router.py      │◄──────────►│  server.py       │
+       │  (failover,     │  SQLite    │  (HTTP API,      │
+       │  breakers,      │  state/    │   SSE, auth,     │
+       │  caches,        │  router.db │   rate limit,    │
+       │  ndjson, corr)  │  (WAL)     │   log rotation)  │
+       └────────┬────────┘            └────────┬─────────┘
+                │                              │
+       ┌────────▼──────────────────────────────▼─────────┐
+       │  Shared state layer                              │
+       │  scripts/db.py    SQLite WAL (events, audit,     │
+       │                   circuits, key_pools, settings) │
+       │  scripts/state.py JSONL/JSON dual-write legacy   │
+       └─────────────────────────────────────────────────┘
+                │
+       ┌────────▼────────┐
+       │  OpenCode CLI / │  v2 API (NDJSON) or subprocess
+       │  opencode serve │  provider key pools + cooldowns
+       └─────────────────┘
 ```
 
 ### Components
 
 | Module | Responsibility |
 |---|---|
-| `scripts/router.py` | Multi-key failover routing, per-model circuit breakers, provider error classification, task classification, v2 API client (dual-path), performance caches |
-| `scripts/db.py` | SQLite state store; connection-per-operation, WAL journal mode, `synchronous=NORMAL`, 30 s busy timeout |
-| `scripts/logging_setup.py` | Shared logging; `JsonFormatter` for `LOG_FORMAT=json` with extra-field preservation |
+| `scripts/router.py` | Multi-key failover routing, per-model circuit breakers, provider error classification, task classification, v2 API client (dual-path), `classify_from_ndjson()`, performance caches, correlation ID propagation |
+| `scripts/db.py` | SQLite state store; connection-per-operation, WAL journal mode, `synchronous=NORMAL`, 30 s busy timeout, `request_id` column for correlation |
+| `scripts/logging_setup.py` | Shared logging; `JsonFormatter` for `LOG_FORMAT=json` with extra-field preservation; `RotatingFileHandler` support |
 | `scripts/config.py` | Centralized `Config` dataclass built from environment |
 | `scripts/key_pool.py` | Provider-scoped key slots, cooldowns, success/failure counters |
 | `scripts/optimizer.py` | Telemetry-based model scoring with Laplace smoothing |
 | `scripts/orchestrator.py` | Multi-role pipeline: planner → coder → reviewer → tester → security_reviewer |
 | `scripts/quality_gate.py` | Fail-closed checks; `shlex.split()` + `shell=False` |
 | `scripts/security_fuzzer.py` | Adversarial payload testing against `/api/run` |
-| `dashboard/server.py` | HTTP API: token auth, SSE, audit log, rate limiting, Pydantic schemas, `/api/health` |
+| `dashboard/server.py` | HTTP API: token auth, SSE, audit log, rate limiting, Pydantic schemas, `/api/health` deep checks, log rotation, correlation IDs |
 
 ---
 
@@ -96,7 +97,9 @@ Low findings are accepted residual risk: subprocess invocation of the OpenCode C
 | Cross-origin | Origin allow-list; CSP `frame-ancestors 'none'`; `X-Frame-Options: DENY`; `nosniff`; `Referrer-Policy` |
 | Rate limiting | Token bucket, 30 req/60 s per IP on mutating endpoints |
 | Input validation | Pydantic `RunRequest`: prompt ≤1,000,000 chars, task ≤50, model ≤200, `max_models` 0–100, `timeout` 0–3600 → 400 before any shell impact |
-| Audit trail | Every mutating endpoint logged to `state/audit.jsonl` (action, ts, IP, user agent) + SQLite `audit` table |
+| Audit trail | Every mutating endpoint logged to `state/audit.jsonl` (action, ts, IP, user agent, **request_id**) + SQLite `audit` table |
+| Correlation IDs | `X-Request-ID` header (auto-generated if missing) propagated through dashboard audit log, SQLite events, router subprocess via `ROUTER_REQUEST_ID` env var |
+| Log rotation | `RotatingFileHandler` in `logging_setup.py`; dashboard configurable via `--log-file`, `--log-max-bytes`, `--log-backup-count` |
 | Bind surface | `127.0.0.1` by default (`DASHBOARD_HOST`) |
 
 ### 3.3 Pen-test verification
@@ -136,12 +139,20 @@ Four caching layers with invalidation-on-write:
 `LOG_FORMAT=json` switches both `scripts/router.py` and `dashboard/server.py` to one JSON object per line:
 
 ```json
-{"timestamp": "2026-11-12T09:00:00+00:00", "level": "INFO", "name": "router", "message": "route selected", "task": "code", "model": "groq/llama-3.3-70b"}
+{"timestamp": "2026-11-12T09:00:00+00:00", "level": "INFO", "name": "router", "message": "route selected", "task": "code", "model": "groq/llama-3.3-70b", "request_id": "abc-123"}
 ```
 
 - Extra fields passed via `logger.info(..., extra={...})` are preserved as top-level keys.
 - Reserved `LogRecord` attributes are excluded automatically.
 - Ready for journald, Loki, or any JSON log collector. Default remains human-readable text.
+
+### Log rotation
+
+Dashboard logs use `RotatingFileHandler` with configurable:
+- `--log-file` (default: `state/dashboard.log`)
+- `--log-max-bytes` (default: 5MB)
+- `--log-backup-count` (default: 5)
+Logs include correlation IDs (`request_id`) for request tracing across router → dashboard → audit log.
 
 ### Health monitoring
 
@@ -152,12 +163,27 @@ Four caching layers with invalidation-on-write:
   "status": "ok",
   "timestamp": "...",
   "version": "2.0.0-enterprise",
+  "opencode_serve_reachable": true,
+  "circuits_healthy": true,
+  "open_circuits": 0,
+  "keys_healthy": 3,
+  "total_key_slots": 5,
   "key_pool": { "...per-provider slot health..." },
   "circuits": { "...per-model breaker state..." }
 }
 ```
 
 Designed for external monitors (cron probes, uptime tools) that can supply the token.
+
+### Correlation IDs
+
+`X-Request-ID` header (auto-generated if missing) propagates through:
+- Dashboard audit log (`state/audit.jsonl` + SQLite `audit` table)
+- Router subprocess (via `ROUTER_REQUEST_ID` env var)
+- SQLite events table (`request_id` column)
+- Structured JSON logs (extra field)
+
+Enables end-to-end request tracing for debugging and audit.
 
 ---
 
@@ -166,8 +192,8 @@ Designed for external monitors (cron probes, uptime tools) that can supply the t
 All commands run at the working tree state of this release:
 
 ```
-$ python -m pytest tests/ -q          → 79 passed        (×3 consecutive runs)
-$ make test                           → OK (79 tests)
+$ python -m pytest tests/ -q          → 96 passed        (×3 consecutive runs)
+$ make test                           → OK (96 tests)
 $ ruff check .                        → All checks passed!
 $ mypy --explicit-package-bases scripts/ dashboard/
                                       → Success: no issues found in 11 source files
@@ -183,6 +209,11 @@ Test coverage highlights added this pass:
 |---|---|
 | `tests/test_enterprise_logging.py` | JSON formatter output shape, extra-field preservation |
 | `tests/test_sqlite_concurrency.py` | WAL lossless concurrent writes (hermetic temp-dir fixture) |
+| `tests/test_log_rotation.py` | RotatingFileHandler creation, rotation, JSON format, directory creation |
+| `tests/test_integration.py` | Full pipeline (dashboard→router→state), circuit breaker, key pool, audit log |
+| `classify_from_ndjson` tests (6) | Success, error, malformed lines, empty input, tool-calls continuation |
+| `correlation ID` test | `X-Request-ID` propagation to audit log |
+| `enhanced /api/health` test | Deep checks for opencode_serve, circuits, keys |
 | (existing 77) | Router classification, circuit breakers, key pools, dashboard auth, SSE, audit, settings, export, sorting/filtering/pagination, security regression (command injection, SSRF) |
 
 ---
@@ -191,11 +222,13 @@ Test coverage highlights added this pass:
 
 | File | Changes |
 |---|---|
-| `README.md` | Performance section, structured logging section, `/api/health` in endpoint table, new env vars, 79-test count, fuzzer note |
-| `SECURITY.md` | Schema-validation and SQLite-concurrency entries; updated defense-in-depth list |
-| `AGENTS.md` | New files (`security_fuzzer.py`, WAL note), 79 tests, chat interface, caching features |
-| `CHANGELOG.md` | "Enterprise hardening (2026-11-12)" section |
-| `ROADMAP.md` | Completed enterprise-hardening section; remaining optional items |
+| `README.md` | Log rotation section, correlation IDs, enhanced `/api/health`, 96-test count |
+| `SECURITY.md` | Correlation IDs, log rotation, request schema validation, SQLite concurrency entries |
+| `AGENTS.md` | Updated project structure, test count (96), env vars table, key features |
+| `CHANGELOG.md` | "Enterprise final pass (2026-11-12)" section |
+| `ROADMAP.md` | Completed enterprise-final section; remaining optional items |
+| `IMPLEMENTATION-CHECKLIST.md` | All phases updated with new features; verification section |
+| `MASTER.md` | Verification section updated with 96 tests, log rotation, correlation IDs |
 | `Final-Report.md` | This document |
 
 ---
@@ -227,4 +260,6 @@ Merge commits and the PR link are recorded in `CHANGELOG.md` lineage.
 
 ## 10. Conclusion
 
-The system now meets the enterprise bar set for this engagement: zero High/Medium static-analysis findings, bounded and schema-validated API surface, WAL-backed concurrent state, structured logs, deep health checks, a 79-test green suite, clean lint/type gates, and a signed, dual-account reviewed release path. Remaining items are explicitly optional enhancements recorded in `ROADMAP.md`.
+The system now meets the enterprise bar set for this engagement: zero High/Medium static-analysis findings, bounded and schema-validated API surface, WAL-backed concurrent state, structured logs with rotation, deep health checks with correlation IDs, a 96-test green suite, clean lint/type gates, and a signed, dual-account reviewed release path. Remaining items are explicitly optional enhancements recorded in `ROADMAP.md`.
+
+**All deliverables from the enterprise final pass have been implemented, tested, documented, and validated.**

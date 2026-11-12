@@ -9,7 +9,7 @@ import json
 import os
 import pathlib
 import re
-import subprocess
+import subprocess  # nosec B404 - subprocess used for controlled CLI calls with shell=False
 import sys
 import time
 import urllib.error
@@ -171,7 +171,7 @@ def _opencode(args: list[str], env: dict[str, str] | None = None):
     """Run a short catalogue/help query. Raises RuntimeError on timeout."""
     timeout = query_timeout()
     try:
-        return subprocess.run(
+        return subprocess.run(  # nosec B603 - controlled command list, shell=False
             [OPENCODE, *args],
             capture_output=True,
             text=True,
@@ -319,6 +319,43 @@ def classify_from_events(events: list[dict]) -> tuple[str, str | None, float, in
     return category, answer, duration_s, exit_code
 
 
+def classify_from_ndjson(raw_lines: list[str]) -> tuple[str, str | None, float, int | None]:
+    """Parse raw NDJSON lines from `opencode run --format json` into
+    (category, answer_text, duration_s, exit_code).
+
+    Handles malformed/incomplete lines gracefully by skipping them with a warning.
+    """
+    events: list[dict] = []
+    for raw_line in raw_lines:
+        line = raw_line.strip()
+        if not line:
+            continue
+        try:
+            ev = json.loads(line)
+            if isinstance(ev, dict):
+                events.append(ev)
+        except json.JSONDecodeError:
+            log.warning("Skipping malformed NDJSON line: %s", line[:100])
+            continue
+
+    if not events:
+        return "execution_error", None, 0.0, 1
+
+    # Reuse the existing event parser
+    category, answer, duration_s, exit_code = classify_from_events(events)
+
+    # If we got an error event, enhance classification using the error message
+    if category == "execution_error":
+        for ev in events:
+            if ev.get("type") == "error":
+                err_msg = str(ev.get("part", {}).get("message", ""))
+                if err_msg:
+                    category = classify(err_msg, 1)
+                    break
+
+    return category, answer, duration_s, exit_code
+
+
 def supports_flag(sub_cmd: str, flag: str) -> bool:
     key = (sub_cmd, flag)
     if key not in _FLAGS:
@@ -452,7 +489,6 @@ def circuit_update(model: str, category: str, success: bool) -> None:
     # Mirror to SQLite
     db_mod._STATE = STATE
     db_mod._DB_PATH = STATE / "router.db"
-    db_mod.close()
     db_mod.circuit_upsert(model, {
         "failures": item.get("failures", 0),
         "successes": item.get("successes", 0),
@@ -466,8 +502,7 @@ def key_candidates(provider: str) -> list[dict[str, Any]]:
     providers = load_json(CONFIG / "providers.json", {"providers": {}}).get("providers", {})
     provider_cfg = providers.get(provider)
     if not provider_cfg:
-        # nosec: B105 - None is Python's None value, not a hardcoded password string.
-        return [{"slot": 0, "env_name": None, "secret": None, "auth_env": None}]
+        return [{"slot": 0, "env_name": None, "secret": None, "auth_env": None}]  # nosec: B105 - None is Python's None value, not a hardcoded password string.
     auth_env = provider_cfg["auth_env"]
 
     now = time.monotonic()
@@ -543,7 +578,6 @@ def key_mark(provider: str, slot: int, outcome: str) -> None:
     # Mirror to SQLite
     db_mod._STATE = STATE
     db_mod._DB_PATH = STATE / "router.db"
-    db_mod.close()
     db_mod.key_pool_upsert(provider, slot, {
         "success": slot_stats.get("success", 0),
         "failure": slot_stats.get("failure", 0),
@@ -556,6 +590,10 @@ def emit(obj: dict[str, Any]) -> None:
     obj = dict(obj)
     obj.setdefault("event_id", str(uuid.uuid4()))
     obj["timestamp"] = iso()
+    # Include correlation ID from environment if available
+    request_id = os.getenv("ROUTER_REQUEST_ID")
+    if request_id:
+        obj["request_id"] = request_id
     # Write to events.jsonl for backward compatibility with tests
     STATE.mkdir(parents=True, exist_ok=True)
     with (STATE / "events.jsonl").open("a", encoding="utf-8") as f:
@@ -563,7 +601,6 @@ def emit(obj: dict[str, Any]) -> None:
     # Mirror to SQLite
     db_mod._STATE = STATE
     db_mod._DB_PATH = STATE / "router.db"
-    db_mod.close()
     db_mod.emit_event(obj)
 
 
@@ -592,8 +629,7 @@ def route(args: Any, config_obj: cfg_mod.Config | None = None) -> int:
         keys = key_candidates(provider)
         if not keys and not REQUIRE_ENV_KEY:
             # No env keys: use credentials stored by `opencode auth login` (or key-less free models).
-            # nosec: B105 - None is Python's None value, not a hardcoded password string.
-            keys = [{"slot": 0, "env_name": None, "secret": None, "auth_env": None}]
+            keys = [{"slot": 0, "env_name": None, "secret": None, "auth_env": None}]  # nosec: B105 - None is Python's None value, not a hardcoded password string.
         if not keys:
             log.info("no API key configured for provider=%s; skipping %s", provider, model)
             emit({"task_id": task_id, "task": args.task, "model": model, "status": "skipped", "error_category": "missing_credentials"})
@@ -690,7 +726,11 @@ def route(args: Any, config_obj: cfg_mod.Config | None = None) -> int:
                     cmd.append("--auto")
                 if os.getenv("ROUTER_ARCHIVED", "1") == "1" and supports_flag("run", "--archived"):
                     cmd.append("--archived")
-                proc = subprocess.run(
+                # Support structured JSON output when OPENCODE_FORMAT_JSON=1
+                if os.getenv("OPENCODE_FORMAT_JSON", "0") == "1" and supports_flag("run", "--format"):
+                    cmd.append("--format")
+                    cmd.append("json")
+                proc = subprocess.run(  # nosec: B603 — static command list; prompt passed as argv, never through a shell
                     cmd + [args.prompt],
                     capture_output=True,
                     text=True,
@@ -698,14 +738,26 @@ def route(args: Any, config_obj: cfg_mod.Config | None = None) -> int:
                     timeout=args.timeout if args.timeout > 0 else None,
                     check=False,
                 )
-                output = (proc.stdout or "") + "\n" + (proc.stderr or "")
-                code = proc.returncode
+                if os.getenv("OPENCODE_FORMAT_JSON", "0") == "1":
+                    # Parse NDJSON from stdout
+                    stdout_lines = (proc.stdout or "").splitlines()
+                    category, answer, duration_s, exit_code = classify_from_ndjson(stdout_lines)
+                    success = category == "success"
+                    duration = duration_s or round(time.monotonic() - start, 3)
+                    code = exit_code if exit_code is not None else (0 if success else 1)
+                    output = answer or ""
+                else:
+                    output = (proc.stdout or "") + "\n" + (proc.stderr or "")
+                    code = proc.returncode
+                    duration = round(time.monotonic() - start, 3)
+                    category = classify(output, code)
+                    success = code == 0
             except subprocess.TimeoutExpired:
                 output = f"timed out after {args.timeout}s"
                 code = 124
-            duration = round(time.monotonic() - start, 3)
-            category = classify(output, code)
-            success = code == 0
+                duration = args.timeout
+                category = "timeout"
+                success = False
             circuit_update(model, category, success)
             if not success:
                 print(f"[router] FAILED model={model} slot={key['slot']} category={category} exit={code}: {last_line(output, key['secret'])}", file=sys.stderr)
@@ -731,10 +783,8 @@ def route(args: Any, config_obj: cfg_mod.Config | None = None) -> int:
                 }
             )
             if success:
-                if proc.stdout:
-                    sys.stdout.write(proc.stdout)
-                if proc.stderr:
-                    sys.stderr.write(proc.stderr)
+                if output:
+                    sys.stdout.write(output)
                 print(f"\n[router] success model={model} latency={duration}s", file=sys.stderr)
                 return 0
             # Key-level retry only when classification suggests credential problem.

@@ -10,15 +10,18 @@ class TestSqliteConcurrency(unittest.TestCase):
     def setUp(self):
         self._old_state = db._STATE
         self._old_db_path = db._DB_PATH
+        self._old_initialized = db._initialized_paths.copy()
 
     def tearDown(self):
         db._STATE = self._old_state
         db._DB_PATH = self._old_db_path
+        db._initialized_paths = self._old_initialized
 
     def test_parallel_writes(self):
         with tempfile.TemporaryDirectory() as td:
             db._STATE = pathlib.Path(td)
             db._DB_PATH = db._STATE / "router.db"
+            db._initialized_paths.clear()
 
             def worker(worker_id: int) -> None:
                 for i in range(50):

@@ -5,6 +5,7 @@ scalable querying of events, audit log, circuits, and key pools.
 """
 from __future__ import annotations
 
+import contextlib
 import json
 import pathlib
 import sqlite3
@@ -15,6 +16,10 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 _STATE: pathlib.Path | None = None
 _DB_PATH: pathlib.Path | None = None
 
+# Lock for schema initialization to avoid race conditions
+_init_lock = threading.Lock()
+_initialized_paths: set[pathlib.Path] = set()
+
 
 def _resolve_paths() -> tuple[pathlib.Path, pathlib.Path]:
     global _STATE, _DB_PATH  # noqa: PLW0603
@@ -23,23 +28,31 @@ def _resolve_paths() -> tuple[pathlib.Path, pathlib.Path]:
     _DB_PATH = _STATE / "router.db"
     return _STATE, _DB_PATH
 
-_conn_lock = threading.Lock()
-_conn: sqlite3.Connection | None = None
 
-
-def connect() -> sqlite3.Connection:
+@contextlib.contextmanager
+def connect():
+    """Context manager that yields a database connection and ensures it's closed."""
     state_dir, db_path = _resolve_paths()
     state_dir.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(str(db_path), check_same_thread=True, timeout=30.0)
+    conn = sqlite3.connect(str(db_path), check_same_thread=False, timeout=30.0)
     conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute("PRAGMA synchronous=NORMAL")
-    _init_schema(conn)
-    return conn
-
-
-def close() -> None:
-    pass
+    # Initialize schema once per database path with lock to avoid race conditions
+    with _init_lock:
+        if db_path not in _initialized_paths:
+            _init_schema(conn)
+            _initialized_paths.add(db_path)
+        else:
+            # Just ensure WAL mode is set for this connection
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute("PRAGMA synchronous=NORMAL")
+    try:
+        yield conn
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
 
 
 def _init_schema(conn: sqlite3.Connection) -> None:
@@ -57,11 +70,13 @@ def _init_schema(conn: sqlite3.Connection) -> None:
             error_category TEXT,
             exit_code INTEGER,
             latency_seconds REAL,
-            payload TEXT
+            payload TEXT,
+            request_id TEXT
         );
         CREATE INDEX IF NOT EXISTS idx_events_model ON events(model);
         CREATE INDEX IF NOT EXISTS idx_events_status ON events(status);
         CREATE INDEX IF NOT EXISTS idx_events_timestamp ON events(timestamp);
+        CREATE INDEX IF NOT EXISTS idx_events_request_id ON events(request_id);
 
         CREATE TABLE IF NOT EXISTS audit (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -109,10 +124,10 @@ def emit_event(obj: dict[str, Any]) -> None:
             """
             INSERT OR REPLACE INTO events
             (event_id, timestamp, task, model, provider, key_slot, status,
-             error_category, exit_code, latency_seconds, payload)
+             error_category, exit_code, latency_seconds, payload, request_id)
             VALUES (:event_id, :timestamp, :task, :model, :provider,
                     :key_slot, :status, :error_category, :exit_code,
-                    :latency_seconds, :payload)
+                    :latency_seconds, :payload, :request_id)
             """,
             {
                 "event_id": obj.get("event_id"),
@@ -126,6 +141,7 @@ def emit_event(obj: dict[str, Any]) -> None:
                 "exit_code": obj.get("exit_code"),
                 "latency_seconds": obj.get("latency_seconds"),
                 "payload": payload,
+                "request_id": obj.get("request_id"),
             },
         )
 

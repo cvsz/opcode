@@ -91,6 +91,22 @@ class DashboardTests(unittest.TestCase):
         self.assertEqual(body3["theme"], "dark")
         self.assertEqual(body3["refresh_interval"], 10)
 
+    def test_health_endpoint_includes_deep_checks(self):
+        r, data = self.req("GET", "/api/health", headers={"X-Router-Token": dash.TOKEN})
+        self.assertEqual(r.status, 200)
+        body = json.loads(data)
+        self.assertIn("opencode_serve_reachable", body)
+        self.assertIn("circuits_healthy", body)
+        self.assertIn("keys_healthy", body)
+        self.assertIsInstance(body["opencode_serve_reachable"], bool)
+        self.assertIsInstance(body["circuits_healthy"], bool)
+        self.assertIsInstance(body["keys_healthy"], int)
+        self.assertIn("status", body)
+        self.assertIn(body["status"], ("ok", "degraded"))
+        self.assertIn("version", body)
+        self.assertIn("key_pool", body)
+        self.assertIn("circuits", body)
+
 
 class ClassifyTests(unittest.TestCase):
     def test_plain_numbers_are_not_outages(self):

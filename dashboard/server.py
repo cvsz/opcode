@@ -8,15 +8,18 @@ import datetime as dt
 import hmac
 import http.server
 import json
+import logging
 import os
 import pathlib
 import queue
 import secrets
-import subprocess
+import subprocess  # nosec: B404 — intentional; dashboard runs subprocess with shell=False and validated list args only  # nosec B404 - subprocess used for controlled CLI calls with shell=False
 import sys
 import threading
 import time
+import urllib.error
 import urllib.parse
+import urllib.request
 import uuid
 from typing import Any
 
@@ -38,7 +41,49 @@ from scripts.state import (  # noqa: E402
 )
 
 _cfg = cfg_mod.Config.from_env()
-log = logging_setup.setup_logging(_cfg.log_level, "dashboard", json_format=os.getenv("LOG_FORMAT") == "json")
+# Dashboard log file in state directory
+DASHBOARD_LOG_FILE = STATE / "dashboard.log"
+
+
+def _make_logger(
+    log_level: str,
+    json_format: bool,
+    log_file: str | None = None,
+    max_bytes: int = 5_000_000,
+    backup_count: int = 5,
+) -> logging.Logger:
+    """Create a logger with rotating file handler."""
+    return logging_setup.setup_logging(
+        log_level,
+        "dashboard",
+        json_format=json_format,
+        rotating=log_file is not None,
+        log_file=log_file,
+        max_bytes=max_bytes,
+        backup_count=backup_count,
+    )
+
+
+# Use a mutable holder to avoid 'global' statement in main()
+_logger_holder: dict[str, logging.Logger] = {}
+
+
+def get_logger() -> logging.Logger:
+    """Get the current dashboard logger."""
+    return _logger_holder.get("log") or logging.getLogger("dashboard")
+
+
+# Initialize default logger
+_logger_holder["log"] = _make_logger(
+    _cfg.log_level,
+    json_format=os.getenv("LOG_FORMAT") == "json",
+    log_file=str(DASHBOARD_LOG_FILE),
+    max_bytes=5_000_000,
+    backup_count=5,
+)
+
+# Backward-compatible alias
+log = get_logger()
 
 HTML_PATH = pathlib.Path(__file__).with_name("index.html")
 
@@ -119,7 +164,7 @@ def token_ok(token_header: str) -> bool:
     return hmac.compare_digest(token_header, TOKEN)
 
 
-def audit(action: str, detail: Any = None, ip: str = "", ua: str = "") -> None:
+def audit(action: str, detail: Any = None, ip: str = "", ua: str = "", request_id: str = "") -> None:
     try:
         STATE.mkdir(parents=True, exist_ok=True)
         entry = {
@@ -129,6 +174,8 @@ def audit(action: str, detail: Any = None, ip: str = "", ua: str = "") -> None:
             "ip": ip,
             "ua": ua,
         }
+        if request_id:
+            entry["request_id"] = request_id
         with AUDIT_LOCK, (STATE / "audit.jsonl").open("a", encoding="utf-8") as f:
             f.write(json.dumps(entry, separators=(",", ":")) + "\n")
     except OSError:
@@ -281,13 +328,17 @@ def start_job(d: dict[str, Any]) -> dict[str, Any]:
         ]
         if d["model"]:
             cmd += ["--model", d["model"]]
+        env = os.environ.copy()
+        if d.get("request_id"):
+            env["ROUTER_REQUEST_ID"] = d["request_id"]
         try:
-            p = subprocess.Popen(
+            p = subprocess.Popen(  # nosec B603 - controlled command list, shell=False
                 cmd, cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                text=True, env=os.environ.copy(),
+                text=True, env=env,
             )
             PROCS[jid] = p
-            assert p.stdout is not None
+            if p.stdout is None:
+                raise RuntimeError("Failed to capture stdout from subprocess")
             lines: list[str] = []
             for line in p.stdout:
                 lines.append(line.rstrip()[:1500])
@@ -424,33 +475,47 @@ class H(http.server.BaseHTTPRequestHandler):
             elif u.path == "/api/summary":
                 self.sendj(summary())
             elif u.path == "/api/health":
-                self.sendj({
-                    "circuits": load_json(STATE / "circuits.json", {}),
-                    "keys": load_json(STATE / "key-pools.json", {}),
-                })
-            elif u.path == "/api/task-config":
-                t = urllib.parse.parse_qs(u.query).get("task", ["code"])[0]
-                if t not in TASKS:
-                    raise ValueError("Invalid task")
-                self.sendj({
-                    "task": t,
-                    "models": [
-                        x.strip()
-                        for x in (CONFIG / (t + ".txt")).read_text().splitlines()
-                        if x.strip() and not x.lstrip().startswith("#")
-                    ],
-                })
-            elif u.path == "/api/health":
                 circuits = load_json(STATE / "circuits.json", {})
+                now_dt = dt.datetime.now(dt.timezone.utc)
+                open_circuits = sum(
+                    1 for c in circuits.values()
+                    if isinstance(c, dict) and c.get("open_until")
+                    and dt.datetime.fromisoformat(c["open_until"]) > now_dt
+                )
+                
+                # Check opencode serve connectivity if configured
+                opencode_serve_reachable = False
+                if os.getenv("OPENCODE_SERVER"):
+                    try:
+                        req = urllib.request.Request(
+                            os.getenv("OPENCODE_SERVER", "").rstrip("/") + "/api/info",
+                            method="GET"
+                        )
+                        if os.getenv("OPENCODE_PASSWORD"):
+                            req.add_header("Authorization", f"Bearer {os.getenv('OPENCODE_PASSWORD')}")
+                        with urllib.request.urlopen(req, timeout=5) as resp:  # nosec B310
+                            opencode_serve_reachable = resp.status == 200
+                    except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, OSError):
+                        opencode_serve_reachable = False
+                
+                # Check key pool health
+                keys = key_status()
+                keys_healthy = sum(1 for k in keys if k.get("status") == "READY")
+                
                 self.sendj({
-                    "status": "ok",
+                    "status": "ok" if open_circuits == 0 else "degraded",
                     "timestamp": utcnow().isoformat(),
                     "version": "2.0.0-enterprise",
-                    "key_pool": key_status(),
+                    "opencode_serve_reachable": opencode_serve_reachable,
+                    "circuits_healthy": open_circuits == 0,
+                    "open_circuits": open_circuits,
+                    "keys_healthy": keys_healthy,
+                    "total_key_slots": len(keys),
+                    "key_pool": keys,
                     "circuits": circuits,
                 })
             elif u.path == "/api/catalogue":
-                p = subprocess.run(
+                p = subprocess.run(  # nosec B603 - controlled command list, shell=False
                     [os.getenv("OPENCODE", "opencode"), "models"],
                     cwd=ROOT, capture_output=True, text=True, timeout=30, check=False,
                 )
@@ -516,6 +581,8 @@ class H(http.server.BaseHTTPRequestHandler):
             path = urllib.parse.urlparse(self.path).path
             ip = self.client_ip()
             ua = self.client_ua()
+            # Extract correlation ID from header, generate if missing
+            request_id = self.headers.get("X-Request-ID", "") or str(uuid.uuid4())
             if not HAS_PYDANTIC:
                 # pydantic unavailable: fall back to manual validation
                 if path == "/api/run":
@@ -539,8 +606,8 @@ class H(http.server.BaseHTTPRequestHandler):
                         or not 0 <= to <= 3600
                     ):
                         raise ValueError("Invalid model or limits")
-                    j = start_job({"task": t, "prompt": prompt, "model": model, "max_models": mx, "timeout": to})
-                    audit("run", {"task": t, "job": j["id"]}, ip, ua)
+                    j = start_job({"task": t, "prompt": prompt, "model": model, "max_models": mx, "timeout": to, "request_id": request_id})
+                    audit("run", {"task": t, "job": j["id"]}, ip, ua, request_id)
                     self.sendj(j, 202)
                 elif path == "/api/cancel":
                     jid = d.get("id")
@@ -548,20 +615,19 @@ class H(http.server.BaseHTTPRequestHandler):
                     job = JOBS.get(jid)
                     if not p or not job:
                         raise ValueError("No running job with that id")
-                    assert p is not None
                     job["cancelled"] = True
                     p.terminate()
-                    audit("cancel", {"job": jid}, ip, ua)
+                    audit("cancel", {"job": jid}, ip, ua, request_id)
                     self.sendj({"message": "Cancel requested"})
                 elif path == "/api/plan":
                     t = d.get("task")
                     if t not in TASKS:
                         raise ValueError("Invalid task")
-                    plan_proc = subprocess.run(
+                    plan_proc = subprocess.run(  # nosec B603 - controlled command list, shell=False
                         [os.getenv("PYTHON", "python3"), str(ROOT / "scripts/router.py"), "plan", "--task", t],
                         cwd=ROOT, capture_output=True, text=True, timeout=30, check=False,
                     )
-                    audit("plan", {"task": t}, ip, ua)
+                    audit("plan", {"task": t}, ip, ua, request_id)
                     self.sendj({"output": (plan_proc.stdout or "") + (plan_proc.stderr or ""), "exit_code": plan_proc.returncode})
                 elif path == "/api/task-config":
                     t = d.get("task")
@@ -575,13 +641,13 @@ class H(http.server.BaseHTTPRequestHandler):
                         if m not in clean_list:
                             clean_list.append(m)
                     atomic_write_text(CONFIG / (t + ".txt"), "\n".join(clean_list) + ("\n" if clean_list else ""))
-                    audit("task-config", {"task": t, "models": clean_list}, ip, ua)
+                    audit("task-config", {"task": t, "models": clean_list}, ip, ua, request_id)
                     self.sendj({"saved": True})
                 elif path in ("/api/reset-circuits", "/api/reset-keys"):
                     f = STATE / ("circuits.json" if path.endswith("circuits") else "key-pools.json")
                     STATE.mkdir(exist_ok=True)
                     atomic_write_text(f, "{}\n")
-                    audit("reset", {"target": path}, ip, ua)
+                    audit("reset", {"target": path}, ip, ua, request_id)
                     self.sendj({"message": "State reset"})
                 elif path == "/api/token/regen":
                     rotate_token()
@@ -591,7 +657,7 @@ class H(http.server.BaseHTTPRequestHandler):
                     if not isinstance(settings, dict):
                         raise ValueError("Invalid settings")
                     save_settings(settings)
-                    audit("settings", settings, ip, ua)
+                    audit("settings", settings, ip, ua, request_id)
                     self.sendj({"saved": True})
                 else:
                     self.send_error(404)
@@ -604,8 +670,8 @@ class H(http.server.BaseHTTPRequestHandler):
                         self.sendj({"error": ve.errors()}, 400)
                         return
                     j = start_job({"task": run_req.task, "prompt": run_req.prompt, "model": run_req.model,
-                                   "max_models": run_req.max_models, "timeout": run_req.timeout})
-                    audit("run", {"task": run_req.task, "job": j["id"]}, ip, ua)
+                                   "max_models": run_req.max_models, "timeout": run_req.timeout, "request_id": request_id})
+                    audit("run", {"task": run_req.task, "job": j["id"]}, ip, ua, request_id)
                     self.sendj(j, 202)
                 elif path == "/api/cancel":
                     try:
@@ -618,20 +684,19 @@ class H(http.server.BaseHTTPRequestHandler):
                     job = JOBS.get(cancel_id)
                     if not p or not job:
                         raise ValueError("No running job with that id")
-                    assert p is not None
                     job["cancelled"] = True
                     p.terminate()
-                    audit("cancel", {"job": cancel_id}, ip, ua)
+                    audit("cancel", {"job": cancel_id}, ip, ua, request_id)
                     self.sendj({"message": "Cancel requested"})
                 elif path == "/api/plan":
                     t = d.get("task")
                     if t not in TASKS:
                         raise ValueError("Invalid task")
-                    plan_proc = subprocess.run(
+                    plan_proc = subprocess.run(  # nosec B603 - controlled command list, shell=False
                         [os.getenv("PYTHON", "python3"), str(ROOT / "scripts/router.py"), "plan", "--task", t],
                         cwd=ROOT, capture_output=True, text=True, timeout=30, check=False,
                     )
-                    audit("plan", {"task": t}, ip, ua)
+                    audit("plan", {"task": t}, ip, ua, request_id)
                     self.sendj({"output": (plan_proc.stdout or "") + (plan_proc.stderr or ""), "exit_code": plan_proc.returncode})
                 elif path == "/api/task-config":
                     try:
@@ -648,13 +713,13 @@ class H(http.server.BaseHTTPRequestHandler):
                         if m not in clean:
                             clean.append(m)
                     atomic_write_text(CONFIG / (task_config_req.task + ".txt"), "\n".join(clean) + ("\n" if clean else ""))
-                    audit("task-config", {"task": task_config_req.task, "models": clean}, ip, ua)
+                    audit("task-config", {"task": task_config_req.task, "models": clean}, ip, ua, request_id)
                     self.sendj({"saved": True})
                 elif path in ("/api/reset-circuits", "/api/reset-keys"):
                     f = STATE / ("circuits.json" if path.endswith("circuits") else "key-pools.json")
                     STATE.mkdir(exist_ok=True)
                     atomic_write_text(f, "{}\n")
-                    audit("reset", {"target": path}, ip, ua)
+                    audit("reset", {"target": path}, ip, ua, request_id)
                     self.sendj({"message": "State reset"})
                 elif path == "/api/token/regen":
                     rotate_token()
@@ -666,7 +731,7 @@ class H(http.server.BaseHTTPRequestHandler):
                         self.sendj({"error": ve.errors()}, 400)
                         return
                     save_settings(settings_req.settings)
-                    audit("settings", settings_req.settings, ip, ua)
+                    audit("settings", settings_req.settings, ip, ua, request_id)
                     self.sendj({"saved": True})
                 else:
                     self.send_error(404)
@@ -674,7 +739,7 @@ class H(http.server.BaseHTTPRequestHandler):
             self.sendj({"error": str(e)}, 400)
 
     def log_message(self, fmt: str, *args: Any) -> None:
-        log.info("[dashboard] " + fmt % args)
+        get_logger().info("[dashboard] " + fmt % args)
 
 
 def main() -> None:
@@ -682,9 +747,20 @@ def main() -> None:
     p.add_argument("--host", default=_cfg.dashboard_host)
     p.add_argument("--port", type=int, default=_cfg.dashboard_port)
     p.add_argument("--require-auth", action="store_true", help="Require auth on all endpoints (including /)")
+    p.add_argument("--log-file", default=str(DASHBOARD_LOG_FILE), help="Log file path")
+    p.add_argument("--log-max-bytes", type=int, default=5_000_000, help="Max bytes per log file")
+    p.add_argument("--log-backup-count", type=int, default=5, help="Number of backup log files")
     a = p.parse_args()
     if a.host not in {"127.0.0.1", "localhost", "::1"}:
         raise SystemExit("Loopback only; use authenticated reverse proxy for remote access")
+    # Reconfigure logger with custom log file settings
+    _logger_holder["log"] = _make_logger(
+        _cfg.log_level,
+        json_format=os.getenv("LOG_FORMAT") == "json",
+        log_file=a.log_file,
+        max_bytes=a.log_max_bytes,
+        backup_count=a.log_backup_count,
+    )
     s = http.server.ThreadingHTTPServer((a.host, a.port), H)
     print(f"Control panel: http://{a.host}:{a.port}/")
     try:
