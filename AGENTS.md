@@ -16,17 +16,19 @@ scripts/           Router, key pool, optimizer, orchestrator, quality gate, stat
   router.py        Multi-key failover routing, circuit breakers, classify, v2 API client (dual-path)
   state.py         Shared JSON state helpers
   config.py        Centralized Config dataclass
-  logging_setup.py Shared logging
-  db.py            SQLite state store (events, audit, circuits, key pools, settings)
+  logging_setup.py Shared logging (text + JSON structured output via LOG_FORMAT=json)
+  db.py            SQLite state store (events, audit, circuits, key pools, settings; WAL mode)
   key_pool.py      Key pool management CLI
   optimizer.py     Telemetry-based model scoring (collect_stats / main)
   orchestrator.py  Multi-role orchestration (planner → coder → reviewer → tester → security_reviewer)
   quality_gate.py  Fail-closed quality gate checks
+  security_fuzzer.py  Adversarial payload fuzzer for the dashboard API
 config/            Per-task ordered model lists (code, review, fast, vision, general)
 state/             Runtime state (events.jsonl, circuits.json, key-pools.json, audit.jsonl,
-                   dashboard-settings.json, router.db SQLite)
-tests/             Python unittest suite (77 tests)
+                   dashboard-settings.json, router.db SQLite WAL)
+tests/             Python unittest suite (79 tests incl. JSON logging + SQLite concurrency)
 .github/           CI workflow, Dependabot, issue templates
+docs/              Plans, specs, and Final-Report.md
 Makefile           All-in-one control: start/stop/status/restart, test/lint/type-check/security-scan/ci-all
 ```
 
@@ -51,7 +53,7 @@ make restart
 # Run dashboard control panel (http://127.0.0.1:8765)
 python dashboard/server.py --host 127.0.0.1 --port 8765
 
-# Run the test suite (77 tests)
+# Run the test suite (79 tests)
 python -m unittest discover -s tests -v
 
 # Compile-check all Python
@@ -122,15 +124,17 @@ make ci-all        # lint + type-check + security + tests
 - Per-model circuit breakers (500–504 outage classification only)
 - Provider error classification (quota_exhausted, rate_limited, authentication, provider_outage, model_unavailable, execution_error)
 - Dual execution: legacy `opencode run` CLI + `opencode serve` v2 API NDJSON
-- SQLite state (dual-write with JSONL for backward compatibility)
-- Pydantic request/response schemas with manual fallback
-- Logging module throughout (replaces `print()`)
+- SQLite state (dual-write with JSONL for backward compatibility; WAL journal mode, 30 s busy timeout)
+- Pydantic request/response schemas with manual fallback and bounded field values
+- Logging module throughout (replaces `print()`); `LOG_FORMAT=json` for structured logs
+- Performance caches: model catalogue, circuit/key-pool state, task routes, dashboard summary
 - Type hints throughout
 - Security: SSRF protection via URL scheme validation (http/https only)
 - Security: Command injection prevention — `shell=False` for `TEST_COMMAND`, uses `shlex.split()`
 
 ### Frontend (`dashboard/app.js`, `dashboard/style.css`, `dashboard/index.html`)
 - Modular: HTML structure / CSS styles / JS logic
+- Chat interface routed through the free-model `general` task
 - SSE real-time updates with polling fallback
 - Token auth, rate limiting, audit log, settings persistence
 - Table sorting/filtering/pagination, job detail view, CSV/JSON export
