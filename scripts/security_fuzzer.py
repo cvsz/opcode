@@ -10,17 +10,17 @@ def test_fuzz():
     
     # Oversized prompt
     payload = {"task": "code", "prompt": "a" * 200000}
-    r = requests.post(url, json=payload, headers=headers)
+    r = requests.post(url, json=payload, headers=headers, timeout=10)
     print(f"Oversized prompt status: {r.status_code}")
-    
+
     # Negative timeout
     payload = {"task": "code", "prompt": "hi", "timeout": -1}
-    r = requests.post(url, json=payload, headers=headers)
+    r = requests.post(url, json=payload, headers=headers, timeout=10)
     print(f"Negative timeout status: {r.status_code}")
-    
+
     # Invalid task type
     payload = {"task": "invalid_task_type_here", "prompt": "hi"}
-    r = requests.post(url, json=payload, headers=headers)
+    r = requests.post(url, json=payload, headers=headers, timeout=10)
     print(f"Invalid task status: {r.status_code}")
 
 if __name__ == "__main__":

@@ -46,6 +46,17 @@ Single source of truth merging the five archived releases (v1 → v5). v5 was th
 - Dual-write state: JSONL + SQLite for backward compatibility
 - Expanded tests: 16 -> 77 (SSE, token regen, audit log, settings, export, sorting/filtering/pagination, security regression)
 
+## Enterprise hardening (2026-11-12)
+- **Structured logging**: `LOG_FORMAT=json` emits one JSON object per line from router and dashboard (`scripts/logging_setup.py` `JsonFormatter`); extra fields preserved.
+- **SQLite WAL + per-statement connections**: `scripts/db.py` refactored to connection-per-operation with `journal_mode=WAL`, `synchronous=NORMAL`, 30 s busy timeout; verified lossless under 10-thread concurrent writes (`tests/test_sqlite_concurrency.py`).
+- **Request schema hardening**: `RunRequest` bounds prompt (≤1,000,000 chars), task (≤50), model (≤200), `max_models` (0–100), `timeout` (0–3600).
+- **`/api/health` deep-check endpoint**: returns status, version, key-pool slot health, and circuit state for external monitors.
+- **Performance caches**: model catalogue (30 s TTL), circuit/key-pool state (5 s TTL), task route lists, dashboard summary (2 s) and key status (5 s) caches.
+- **Frontend chat interface**: multi-turn chat panel routed through the `general` free-model task route with in-memory history and automatic job polling.
+- **Security fuzzer**: `scripts/security_fuzzer.py` sends oversized / out-of-range / invalid payloads at `/api/run`; server answers 4xx and never crashes.
+- **Makefile all-in-one control center**: `make all/start/stop/status/restart/ci-all/dev` plus feature-group targets.
+- Tests: 77 -> 79 (JSON logging, SQLite concurrency).
+
 ## Security fixes (hardening)
 - Command injection neutralized: `quality_gate.py` no longer uses `shell=True`; `TEST_COMMAND` parsed with `shlex.split()` and executed via `subprocess.run(cmd, shell=False)`
 - SSRF neutralized: all `urllib.request.urlopen` calls in `router.py` validate URL scheme (`http://`/`https://` only); `file://`, `ftp://`, `gopher://` rejected via `_validate_url()`

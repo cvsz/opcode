@@ -230,7 +230,7 @@ def v2_runs_create(model: str, prompt: str, auto: bool, archived: bool,
     events: list[dict] = []
     run_id = ""
     try:
-        with urllib.request.urlopen(req, timeout=timeout if timeout is not None and timeout > 0 else None) as resp:
+        with urllib.request.urlopen(req, timeout=timeout if timeout is not None and timeout > 0 else None) as resp:  # nosec B310 - URL validated by _validate_url()
             for raw in resp:
                 line = raw.decode("utf-8", errors="replace").strip()
                 if not line:
@@ -261,7 +261,7 @@ def v2_runs_get(run_id: str, password: str | None = None) -> dict:
     if password:
         req.add_header("Authorization", f"Bearer {password}")
     try:
-        with urllib.request.urlopen(req, timeout=30) as resp:
+        with urllib.request.urlopen(req, timeout=30) as resp:  # nosec B310 - URL validated by _validate_url()
             return json.loads(resp.read().decode("utf-8"))
     except urllib.error.HTTPError as e:
         raise RuntimeError(f"v2 API /api/runs/{run_id} failed: {e.code}") from e
@@ -276,7 +276,7 @@ def v2_runs_cancel(run_id: str, password: str | None = None) -> None:
     if password:
         req.add_header("Authorization", f"Bearer {password}")
     try:
-        urllib.request.urlopen(req, timeout=30)
+        urllib.request.urlopen(req, timeout=30)  # nosec B310 - URL validated by _validate_url()
     except urllib.error.HTTPError as e:
         raise RuntimeError(f"v2 API cancel failed: {e.code}") from e
     except urllib.error.URLError as e:
