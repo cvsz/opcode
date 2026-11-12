@@ -2,6 +2,18 @@
 
 Free-model router for the OpenCode CLI: ordered per-task fallbacks, provider error classification, per-model circuit breakers, provider-scoped multi-API-key failover, role-based orchestration, a fail-closed quality gate, telemetry-based ranking, and a local control panel. See `CHANGELOG.md` for lineage.
 
+## GitHub features
+
+| Feature | File | Purpose |
+|---|---|---|
+| CI workflow | `.github/workflows/ci.yml` | Tests on Python 3.10–3.13 matrix (fail-fast off), least-privilege `contents: read` permissions, `py_compile`, `unittest`, `shellcheck`, Make-target parse check, committed-bytecode/secret scan |
+| Dependabot | `.github/dependabot.yml` | Weekly automatic updates for GitHub Actions |
+| Bug report | `.github/ISSUE_TEMPLATE/bug_report.md` | Structured bug reports with reproduction steps and environment |
+| Feature request | `.github/ISSUE_TEMPLATE/feature_request.md` | Structured feature/enhancement proposals |
+| Security advisory | `.github/ISSUE_TEMPLATE/security.yml` | Private security vulnerability reporting form |
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the contribution workflow and [GOVERNANCE.md](GOVERNANCE.md) for decision-making.
+
 ## Requirements
 - OpenCode CLI installed and provider credentials configured.
 - Python 3.10+, Bash, GNU Make.
@@ -72,7 +84,8 @@ Classification is heuristic based on OpenCode output. It may misclassify provide
 - `state/circuits.json`: per-model breaker state.
 - `state/orchestrations/*.json`: role execution status.
 - `state/quality-gate.json`: last quality gate result.
-
+- `state/audit.jsonl`: dashboard mutating-action audit log (action, timestamp, IP, user agent).
+- `state/dashboard-settings.json`: persisted dashboard settings (theme, refresh interval).
 
 ## Multi-API-key automatic switching
 
@@ -106,7 +119,6 @@ On invalid/expired authentication failures, the router cools down that credentia
 - Do not use keys from unrelated users. Prefer a secret manager in production. Never paste real keys into chat or commit them.
 - OpenCode model catalogue listing is not a live key validation. The first inference is the actual provider test.
 
-
 ## Control panel
 
 Start the local frontend and API:
@@ -122,16 +134,20 @@ The control panel provides:
 - API-key slot presence and cooldown/counters; secret values are never sent to the browser.
 - Read-only health and installed model catalogue views.
 - Circuit and key-pool state reset controls.
-- Recent job output/status with automatic 5-second refresh.
+- Recent job output/status with automatic 5-second refresh (SSE with polling fallback when tab hidden).
+- Table sorting/filtering/pagination, job detail view with expandable output, CSV/JSON export, settings persistence, custom confirm dialogs, loading states on in-flight actions.
+- Dark/light theme with persistence, ARIA live regions, focus-visible styling, keyboard-navigable dialogs.
 
 Security boundaries:
 - The server refuses non-loopback binds and non-loopback `Host` headers (DNS-rebinding guard). Do not expose it directly to a LAN or the public internet.
 - POST requests validate the browser Origin when present and validate task/model/limit inputs.
+- Every `/api/*` call requires `X-Router-Token` (constant-time compare). Token rotates after 1000 requests and via `POST /api/token/regen`; old tokens are immediately invalidated.
+- Rate limiting (token bucket, 30 requests per 60 seconds per IP) on mutating endpoints.
+- Audit log (`state/audit.jsonl`) records action, IP, and user agent for every mutating endpoint.
 - The frontend does not accept or display API key values. Configure keys through the ignored `.keys.env` file or the process environment, then restart the dashboard so its child processes inherit them.
 - The dashboard starts router jobs using argument arrays, never shell interpolation. It does not enable OpenCode `--auto`.
 - The dashboard is a local administrative surface, not a multi-user authenticated control plane. For remote access, put it behind an authenticated reverse proxy and restrict network access.
 - Job records are in-memory and disappear when the dashboard restarts; model attempt telemetry remains in `state/events.jsonl`.
-
 
 ## Tuning knobs
 | Variable | Default | Effect |
@@ -145,5 +161,37 @@ Security boundaries:
 | `CIRCUIT_QUOTA_COOLDOWN_SECONDS` | `3600` | how long a model stays blocked after an out-of-credits error |
 | `CONTEXT_CHARS` | `6000` | prior-role output carried into the next orchestrator role |
 | `CIRCUIT_FAILURE_THRESHOLD`, `CIRCUIT_COOLDOWN_SECONDS`, `KEY_COOLDOWN_SECONDS` | `2`, `300`, `300` | breaker / key cooldown behaviour |
+| `DASHBOARD_HOST` | `127.0.0.1` | dashboard bind host (loopback only) |
+| `DASHBOARD_PORT` | `8765` | dashboard bind port |
+| `DASHBOARD_TOKEN_BYTES` | `24` | API token length |
+| `LOG_LEVEL` | `INFO` | logging level |
+| `OPENCODE_SERVER` | unset | if set, router calls `opencode serve` v2 API (`/api/runs`) instead of CLI subprocess |
 
 `opencode-cli-export/` holds `--help` dumps of the installed OpenCode CLI, used as the reference for flags the router relies on.
+
+## Documentation
+- [AGENTS.md](AGENTS.md) — agent instructions for this repo
+- [CLAUDE.md](CLAUDE.md) — Claude Code instructions
+- [CODEX.md](CODEX.md) — Codex instructions
+- [GEMINI.md](GEMINI.md) — Gemini instructions
+- [OPENCODE.md](OPENCODE.md) — OpenCode CLI integration reference
+- [CHANGELOG.md](CHANGELOG.md) — release lineage and change history
+- [ROADMAP.md](ROADMAP.md) — completed and planned work
+- [GOVERNANCE.md](GOVERNANCE.md) — decision-making and versioning
+- [CONTRIBUTING.md](CONTRIBUTING.md) — contribution workflow
+- [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) — community conduct standards
+- [SECURITY.md](SECURITY.md) — security policy and disclosure
+- [MASTER.md](MASTER.md) — refactor plan and implementation notes
+- [IMPLEMENTATION-CHECKLIST.md](IMPLEMENTATION-CHECKLIST.md) — task tracking
+- [config/QUALITY-GATE.md](config/QUALITY-GATE.md) — quality gate details
+
+## Testing
+```bash
+python -m unittest discover -s tests -v          # 67 tests
+python -m py_compile scripts/*.py dashboard/server.py
+shellcheck scripts/load-keys.sh
+make -n help test keys optimize >/dev/null
+```
+
+## License
+See repository root for license information.
