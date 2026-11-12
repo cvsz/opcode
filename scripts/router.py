@@ -24,7 +24,9 @@ from scripts import logging_setup
 
 log = logging_setup.setup_logging(cfg_mod.Config.from_env().log_level, __name__)
 
-# Module-level state (patchable by tests via router.STATE, router.FAIL_THRESHOLD, etc.)
+# =============================================================================
+# MODULE LEVEL CONFIGURATION
+# =============================================================================
 _cfg = cfg_mod.Config.from_env()
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 CONFIG = ROOT / "config"
@@ -43,7 +45,26 @@ ROUTER_AUTO = _cfg.router_auto
 ROUTER_ARCHIVED = _cfg.router_archived
 OPENCODE_QUERY_TIMEOUT = _cfg.open_code_query_timeout
 
+# --- Cache for opencode models (avoid expensive subprocess calls) ---
+_AVAILABLE_CACHE: dict[str, Any] = {"data": None, "timestamp": 0.0}
+_AVAILABLE_CACHE_TTL = float(os.getenv("OPENCODE_MODELS_CACHE_TTL", "30"))  # seconds
 
+# Circuit state cache wrapper
+class _CircuitCache:
+    data: dict[str, Any] = {}
+    timestamp: float = 0.0
+    ttl: float = float(os.getenv("CIRCUIT_CACHE_TTL", "5"))
+
+_circuit_cache = _CircuitCache()
+
+# Key pool cache
+_KEY_POOL_CACHE: dict = {}
+_KEY_POOL_CACHE_TTL = float(os.getenv("KEY_POOL_CACHE_TTL", "5"))  # seconds
+_KEY_POOL_CACHE_TIMESTAMP: float = 0.0
+
+# =============================================================================
+# UTILITY FUNCTIONS
+# =============================================================================
 def _int_env(name: str, default: int) -> int:
     try:
         return int(os.getenv(name, str(default)))
@@ -331,17 +352,41 @@ def task_models(task: str) -> list[str]:
 
 
 def get_available() -> str:
+    """Get available models from opencode catalogue with caching."""
+    now = time.monotonic()
+    if _AVAILABLE_CACHE["data"] is not None and (now - _AVAILABLE_CACHE["timestamp"]) < _AVAILABLE_CACHE_TTL:
+        return _AVAILABLE_CACHE["data"]
     try:
         p = _opencode(["models"])
     except OSError as exc:
         raise RuntimeError(f"cannot run {OPENCODE}: {exc}") from exc
     if p.returncode:
         raise RuntimeError(f"opencode models failed: {p.stderr.strip()}")
-    return p.stdout + "\n" + p.stderr
+    result = p.stdout + "\n" + p.stderr
+    _AVAILABLE_CACHE["data"] = result
+    _AVAILABLE_CACHE["timestamp"] = now
+    return result
 
 
 def circuit_is_open(model: str) -> bool:
+    now = time.monotonic()
+    # Check cache first
+    if _circuit_cache.timestamp and now - _circuit_cache.timestamp < _circuit_cache.ttl:
+        item = _circuit_cache.data.get(model, {})
+        if not isinstance(item, dict):
+            return False
+        until = item.get("open_until")
+        if not until:
+            return False
+        try:
+            return dt.datetime.fromisoformat(until) > utcnow()
+        except (ValueError, TypeError):
+            return False
+    # Cache miss or expired, read from disk
     state_data = load_json(STATE / "circuits.json", {})
+    # Update cache
+    _circuit_cache.data = state_data
+    _circuit_cache.timestamp = now
     item = state_data.get(model, {})
     if not isinstance(item, dict):
         return False
@@ -357,6 +402,8 @@ def circuit_is_open(model: str) -> bool:
 def circuit_update(model: str, category: str, success: bool) -> None:
     path = STATE / "circuits.json"
     state_data = load_json(path, {})
+    if not isinstance(state_data, dict):
+        state_data = {}
     item = state_data.get(model)
     if not isinstance(item, dict):
         item = {"failures": 0, "successes": 0}
@@ -375,6 +422,9 @@ def circuit_update(model: str, category: str, success: bool) -> None:
             item["open_until"] = (utcnow() + dt.timedelta(seconds=cooldown)).isoformat()
     item["updated_at"] = iso()
     save_json(path, state_data)
+    # Invalidate cache so subsequent reads pick up the update
+    _circuit_cache.data = state_data
+    _circuit_cache.timestamp = time.monotonic()
     # Mirror to SQLite
     db_mod._STATE = STATE
     db_mod._DB_PATH = STATE / "router.db"
