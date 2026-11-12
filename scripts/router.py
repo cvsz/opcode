@@ -22,7 +22,8 @@ from scripts import config as cfg_mod
 from scripts import db as db_mod
 from scripts import logging_setup
 
-log = logging_setup.setup_logging(cfg_mod.Config.from_env().log_level, __name__)
+_cfg = cfg_mod.Config.from_env()
+log = logging_setup.setup_logging(_cfg.log_level, __name__, json_format=os.getenv("LOG_FORMAT") == "json")
 
 # =============================================================================
 # MODULE LEVEL CONFIGURATION

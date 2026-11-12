@@ -37,9 +37,9 @@ from scripts.state import (  # noqa: E402
     utcnow,
 )
 
-log = logging_setup.setup_logging("INFO", "dashboard")
-
 _cfg = cfg_mod.Config.from_env()
+log = logging_setup.setup_logging(_cfg.log_level, "dashboard", json_format=os.getenv("LOG_FORMAT") == "json")
+
 HTML_PATH = pathlib.Path(__file__).with_name("index.html")
 
 # ---------------------------------------------------------------------------
@@ -47,7 +47,7 @@ HTML_PATH = pathlib.Path(__file__).with_name("index.html")
 # ---------------------------------------------------------------------------
 
 try:
-    from pydantic import BaseModel, ValidationError
+    from pydantic import BaseModel, Field, StringConstraints, ValidationError
     HAS_PYDANTIC = True
 except ImportError:  # pragma: no cover
     HAS_PYDANTIC = False
@@ -60,13 +60,18 @@ except ImportError:  # pragma: no cover
     class ValidationError(Exception):  # type: ignore[no-redef]
         pass
 
+    def Field(default: object = None, **kwargs: object) -> object:  # type: ignore[no-redef,misc]
+        return default
+
+    StringConstraints = None  # type: ignore[assignment,misc]
+
 
 class RunRequest(BaseModel):
-    task: str = ""
-    prompt: str = ""
-    model: str = ""
-    max_models: int = 0
-    timeout: int = 180
+    task: str = Field(default="", max_length=50)
+    prompt: str = Field(default="", max_length=1000000) # Support large contexts for enterprise use
+    model: str = Field(default="", max_length=200)
+    max_models: int = Field(default=0, ge=0, le=100)
+    timeout: int = Field(default=180, ge=0, le=3600)
 
 
 class TaskConfigRequest(BaseModel):
@@ -434,6 +439,15 @@ class H(http.server.BaseHTTPRequestHandler):
                         for x in (CONFIG / (t + ".txt")).read_text().splitlines()
                         if x.strip() and not x.lstrip().startswith("#")
                     ],
+                })
+            elif u.path == "/api/health":
+                circuits = load_json(STATE / "circuits.json", {})
+                self.sendj({
+                    "status": "ok",
+                    "timestamp": utcnow().isoformat(),
+                    "version": "2.0.0-enterprise",
+                    "key_pool": key_status(),
+                    "circuits": circuits,
                 })
             elif u.path == "/api/catalogue":
                 p = subprocess.run(
