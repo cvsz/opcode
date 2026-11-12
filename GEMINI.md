@@ -8,7 +8,7 @@ Multi-provider LLM router with:
 - Provider-scoped multi-API-key rotation
 - Circuit breakers (per model, per failure category)
 - JSONL telemetry + audit log
-- Hardened local control panel (token auth, CSP, SSE, job cancel)
+- Hardened local control panel (token auth, CSP, SSE, job cancel, modular frontend: index.html + style.css + app.js)
 
 ## Entry points
 

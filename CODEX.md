@@ -13,7 +13,9 @@ Local multi-API-key router with circuit breakers, telemetry, and a hardened cont
 - `scripts/config.py` — Centralized `Config` dataclass
 - `scripts/logging_setup.py` — Shared logging
 - `dashboard/server.py` — HTTP API server (token auth, SSE, audit log)
-- `dashboard/index.html` — Single-file frontend
+- `dashboard/index.html` — HTML structure (references style.css + app.js)
+- `dashboard/style.css` — all styles
+- `dashboard/app.js` — frontend logic (api, tables, jobs, settings, exports, SSE)
 
 ## Running tests
 

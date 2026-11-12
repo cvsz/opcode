@@ -6,8 +6,10 @@ This is a local multi-API-key router with circuit breakers, telemetry, and a har
 
 ## Repo layout
 
-- `dashboard/server.py` — Python HTTP server: API + SSE stream + audit log + token auth
-- `dashboard/index.html` — Single-file frontend with SSE, tables, settings, export
+- `dashboard/index.html` — HTML structure (references style.css + app.js)
+- `dashboard/style.css` — all styles
+- `dashboard/app.js` — frontend logic (api, tables, jobs, settings, exports, SSE)
+- `scripts/router.py` — Core routing: key rotation, circuit breakers, telemetry emission
 - `scripts/router.py` — Core routing: key rotation, circuit breakers, telemetry emission
 - `scripts/state.py` — Shared JSON state helpers
 - `scripts/config.py` — Centralized `Config` dataclass
@@ -43,4 +45,4 @@ python scripts/router.py check
 1. Run `python -m py_compile scripts/*.py dashboard/server.py`
 2. Run `python -m unittest discover -s tests -v`
 3. Update `CHANGELOG.md` for user-visible changes
-4. Keep `dashboard/index.html` a single self-contained file unless modularizing
+4. Keep dashboard modular: index.html (structure), style.css (styles), app.js (logic)
