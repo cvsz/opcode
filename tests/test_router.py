@@ -193,6 +193,7 @@ class RouteIntegration(unittest.TestCase):
         (d/"cfg"/"code.txt").write_text("openrouter/m1\n")
         self.old=(router.OPENCODE,router.CONFIG,router.STATE); router.OPENCODE=str(fake)
         router.CONFIG=d/"cfg"; router.STATE=d/"state"; router._FLAGS.clear()
+        router.reset_caches()
         os.environ.update(T_K1="bad",T_K2="good")
         (d/"cfg"/"x").write_text("")
         self.fake_models=d

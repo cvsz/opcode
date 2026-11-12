@@ -45,9 +45,13 @@ ROUTER_AUTO = _cfg.router_auto
 ROUTER_ARCHIVED = _cfg.router_archived
 OPENCODE_QUERY_TIMEOUT = _cfg.open_code_query_timeout
 
-# --- Cache for opencode models (avoid expensive subprocess calls) ---
-_AVAILABLE_CACHE: dict[str, Any] = {"data": None, "timestamp": 0.0}
-_AVAILABLE_CACHE_TTL = float(os.getenv("OPENCODE_MODELS_CACHE_TTL", "30"))  # seconds
+# Models cache wrapper
+class _ModelsCache:
+    data: str | None = None
+    timestamp: float = 0.0
+    ttl: float = float(os.getenv("OPENCODE_MODELS_CACHE_TTL", "30"))
+
+_models_cache = _ModelsCache()
 
 # Circuit state cache wrapper
 class _CircuitCache:
@@ -57,10 +61,23 @@ class _CircuitCache:
 
 _circuit_cache = _CircuitCache()
 
-# Key pool cache
-_KEY_POOL_CACHE: dict = {}
-_KEY_POOL_CACHE_TTL = float(os.getenv("KEY_POOL_CACHE_TTL", "5"))  # seconds
-_KEY_POOL_CACHE_TIMESTAMP: float = 0.0
+# Key pool cache wrapper
+class _KeyPoolCache:
+    data: dict[str, Any] = {}
+    timestamp: float = 0.0
+    ttl: float = float(os.getenv("KEY_POOL_CACHE_TTL", "5"))
+
+_key_pool_cache = _KeyPoolCache()
+
+def reset_caches() -> None:
+    """Reset all in-memory caches. Useful for tests when STATE path changes."""
+    _models_cache.data = None
+    _models_cache.timestamp = 0.0
+    _circuit_cache.data = {}
+    _circuit_cache.timestamp = 0.0
+    _key_pool_cache.data = {}
+    _key_pool_cache.timestamp = 0.0
+    _TASK_CACHE.clear()
 
 # =============================================================================
 # UTILITY FUNCTIONS
@@ -341,21 +358,27 @@ def adaptive_order(models: list[str]) -> list[str]:
     return sorted(models, key=lambda m: -rates.get(m, 0.5))  # stable: ties keep configured order
 
 
+_TASK_CACHE: dict[str, list[str]] = {}
+
 def task_models(task: str) -> list[str]:
     if task not in TASKS:
         raise ValueError(f"Unsupported task: {task}")
-    return [
+    if task in _TASK_CACHE:
+        return _TASK_CACHE[task]
+    models = [
         x.strip()
         for x in (CONFIG / f"{task}.txt").read_text().splitlines()
         if x.strip() and not x.lstrip().startswith("#")
     ]
+    _TASK_CACHE[task] = models
+    return models
 
 
 def get_available() -> str:
     """Get available models from opencode catalogue with caching."""
     now = time.monotonic()
-    if _AVAILABLE_CACHE["data"] is not None and (now - _AVAILABLE_CACHE["timestamp"]) < _AVAILABLE_CACHE_TTL:
-        return _AVAILABLE_CACHE["data"]
+    if _models_cache.data is not None and (now - _models_cache.timestamp) < _models_cache.ttl:
+        return _models_cache.data
     try:
         p = _opencode(["models"])
     except OSError as exc:
@@ -363,8 +386,8 @@ def get_available() -> str:
     if p.returncode:
         raise RuntimeError(f"opencode models failed: {p.stderr.strip()}")
     result = p.stdout + "\n" + p.stderr
-    _AVAILABLE_CACHE["data"] = result
-    _AVAILABLE_CACHE["timestamp"] = now
+    _models_cache.data = result
+    _models_cache.timestamp = now
     return result
 
 
@@ -445,7 +468,16 @@ def key_candidates(provider: str) -> list[dict[str, Any]]:
         # nosec: B105 - None is Python's None value, not a hardcoded password string.
         return [{"slot": 0, "env_name": None, "secret": None, "auth_env": None}]
     auth_env = provider_cfg["auth_env"]
-    pool = load_json(STATE / "key-pools.json", {}).get(provider, {})
+
+    now = time.monotonic()
+    if _key_pool_cache.timestamp and now - _key_pool_cache.timestamp < _key_pool_cache.ttl:
+        state_data = _key_pool_cache.data
+    else:
+        state_data = load_json(STATE / "key-pools.json", {})
+        _key_pool_cache.data = state_data
+        _key_pool_cache.timestamp = now
+
+    pool = state_data.get(provider, {})
     if not isinstance(pool, dict):
         pool = {}
     cooldowns = pool.get("cooldowns", {})
@@ -503,6 +535,10 @@ def key_mark(provider: str, slot: int, outcome: str) -> None:
         slot_stats["failure"] = slot_stats.get("failure", 0) + 1
         cooldowns[str(slot)] = (utcnow() + dt.timedelta(seconds=KEY_COOLDOWN)).isoformat()
     save_json(path, state_data)
+
+    # Update cache
+    _key_pool_cache.data = state_data
+    _key_pool_cache.timestamp = time.monotonic()
     # Mirror to SQLite
     db_mod._STATE = STATE
     db_mod._DB_PATH = STATE / "router.db"

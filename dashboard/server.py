@@ -15,6 +15,7 @@ import secrets
 import subprocess
 import sys
 import threading
+import time
 import urllib.parse
 import uuid
 from typing import Any
@@ -156,17 +157,30 @@ def rotate_token() -> str:
 # State
 # ---------------------------------------------------------------------------
 
+_SUMMARY_CACHE: dict[str, Any] = {}
+_SUMMARY_CACHE_TIMESTAMP: float = 0.0
+_SUMMARY_CACHE_TTL = 2.0  # seconds
+
+_KEY_STATUS_CACHE: list[dict[str, Any]] = []
+_KEY_STATUS_CACHE_TIMESTAMP: float = 0.0
+_KEY_STATUS_CACHE_TTL = 5.0  # seconds
+
 def key_status() -> list[dict[str, Any]]:
+    global _KEY_STATUS_CACHE, _KEY_STATUS_CACHE_TIMESTAMP  # noqa: PLW0603
+    now_mono = time.monotonic()
+    if _KEY_STATUS_CACHE and now_mono - _KEY_STATUS_CACHE_TIMESTAMP < _KEY_STATUS_CACHE_TTL:
+        return _KEY_STATUS_CACHE
+
     providers = load_json(CONFIG / "providers.json", {"providers": {}}).get("providers", {})
     st = load_json(STATE / "key-pools.json", {})
-    now = dt.datetime.now(dt.timezone.utc)
+    now_dt = dt.datetime.now(dt.timezone.utc)
     out: list[dict[str, Any]] = []
     for provider, c in providers.items():
         ps = st.get(provider, {})
         for i, name in enumerate(c.get("key_slots", []), 1):
             until = ps.get("cooldowns", {}).get(str(i))
             try:
-                cool = bool(until and dt.datetime.fromisoformat(until) > now)
+                cool = bool(until and dt.datetime.fromisoformat(until) > now_dt)
             except (ValueError, TypeError):
                 cool = False
             stats = ps.get("stats", {}).get(str(i), {})
@@ -177,10 +191,17 @@ def key_status() -> list[dict[str, Any]]:
                 "success": stats.get("success", 0),
                 "failure": stats.get("failure", 0),
             })
+    _KEY_STATUS_CACHE = out
+    _KEY_STATUS_CACHE_TIMESTAMP = now_mono
     return out
 
 
 def summary() -> dict[str, Any]:
+    global _SUMMARY_CACHE, _SUMMARY_CACHE_TIMESTAMP  # noqa: PLW0603
+    now_mono = time.monotonic()
+    if _SUMMARY_CACHE and now_mono - _SUMMARY_CACHE_TIMESTAMP < _SUMMARY_CACHE_TTL:
+        return _SUMMARY_CACHE
+
     ev: list[dict[str, Any]] = []
     p = STATE / "events.jsonl"
     if p.exists():
@@ -213,13 +234,16 @@ def summary() -> dict[str, Any]:
             "last_error": x["err"],
             "circuit_open": opened,
         })
-    return {
+    res = {
         "events": ev,
         "models": sorted(models, key=lambda x: x["success_rate"], reverse=True),
         "open_circuits": sum(bool(c.get("open_until")) for c in circuits.values()),
         "keys": key_status(),
         "jobs": list(JOBS.values())[-20:],
     }
+    _SUMMARY_CACHE = res
+    _SUMMARY_CACHE_TIMESTAMP = now_mono
+    return res
 
 
 def start_job(d: dict[str, Any]) -> dict[str, Any]:
