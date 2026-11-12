@@ -10,24 +10,22 @@
 - CI matrix (Python 3.10–3.13), Dependabot
 - Classifier fix: `500–504` only for outages
 
-## In progress (refactor per MASTER.md)
+## Completed (full refactor per MASTER.md)
 
-1. Replace CLI subprocess with `opencode serve` v2 API (`/api/runs` NDJSON)
+1. Replace CLI subprocess with `opencode serve` v2 API (`/api/runs` NDJSON) with legacy CLI fallback
 2. Consolidate duplicated helpers into `scripts/state.py` / `config.py`
 3. Type hints + logging throughout
 4. Frontend modularity (CSS + JS split)
-5. SQLite state instead of JSONL
-6. Expanded test coverage
+5. SQLite state instead of JSONL (dual-write for backward compat)
+6. Expanded test coverage (67 tests)
+7. Dashboard hardening: rate limiting, IP/UA audit log, token rotation, settings persistence
+8. Pydantic validation with CI-safe manual fallback
 
-## Planned
+## Planned (optional)
 
-- Real-time SSE dashboard (already basic; enhance with job streams)
-- Table sorting/filtering/pagination
-- Job detail view with expandable output
-- Settings persistence server-side
-- Token rotation schedule + rate limiting
-- pydantic input validation
+- Real-time SSE dashboard enhancement with job streams
 - Async server (aiohttp/asyncio)
+- JS unit tests for frontend tables/exports
 
 ## Not planned
 

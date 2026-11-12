@@ -68,7 +68,7 @@ python scripts/router.py check
 python -m unittest discover -s tests -v
 ```
 
-64 tests cover router classification, circuit breakers, key pools, dashboard auth, SSE, audit log, and classifier regression.
+67 tests cover router classification, circuit breakers, key pools, dashboard auth, SSE, audit log, and classifier regression.
 
 ## Linting
 

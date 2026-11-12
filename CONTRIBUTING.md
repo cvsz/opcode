@@ -28,7 +28,7 @@ python -m unittest discover -s tests -v
 
 ## Testing
 
-64 tests must pass. New features require tests.
+67 tests must pass. New features require tests.
 
 ## Security
 

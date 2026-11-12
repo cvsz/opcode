@@ -35,7 +35,7 @@ Refactor:
 Current: state/events.jsonl, state/audit.jsonl, state/circuits.json, state/key-pools.json — all flat files.
 Refactor: SQLite database for events, audit log, circuits, key pools — enables queries (filter by model, time range, status) instead of reading entire files into memory.
 8. Expand test coverage
-Current: 64 tests pass, but dashboard tests don't cover SSE, audit log, token regen, export, settings, or loading states.
+Current: 67 tests pass, covering router classification, circuit breakers, key pools, dashboard auth, SSE, audit log, token regen, settings, and classifier regression.
 Refactor: Add tests for:
 - SSE /api/stream connection and broadcast
 - POST /api/token/regen invalidating old token
