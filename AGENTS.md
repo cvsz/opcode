@@ -81,7 +81,7 @@ make backend-lint backend-type-check backend-security
 ## Key environment variables
 
 | Variable | Default | Purpose |
-|---|---|---|
+|----------|---------|---------|
 | `CIRCUIT_FAILURE_THRESHOLD` | `2` | Failures before circuit opens |
 | `CIRCUIT_COOLDOWN_SECONDS` | `300` | Circuit cooldown (non-quota) |
 | `CIRCUIT_QUOTA_COOLDOWN_SECONDS` | `3600` | Circuit cooldown (quota exhausted) |
@@ -96,7 +96,6 @@ make backend-lint backend-type-check backend-security
 | `DASHBOARD_PORT` | `8765` | Dashboard bind port |
 | `DASHBOARD_TOKEN_BYTES` | `24` | API token length |
 | `LOG_LEVEL` | `INFO` | Logging level |
-| `OPENCODE_SERVER` | unset | if set, router calls `opencode serve` v2 API instead of CLI subprocess |
 
 ## Testing
 
@@ -121,9 +120,9 @@ make ci-all        # lint + type-check + security + tests
 ### Backend (`scripts/router.py`, `dashboard/server.py`)
 - Provider-scoped multi-API-key failover with cooldowns
 - Per-model circuit breakers (500–504 outage classification only)
-- Provider error classification (quota, rate limit, auth, outage, model unavailable, execution error)
+- Provider error classification (quota_exhausted, rate_limited, authentication, provider_outage, model_unavailable, execution_error)
 - Dual execution: legacy `opencode run` CLI + `opencode serve` v2 API NDJSON
-- SQLite state (dual-write with JSONL for backward compat)
+- SQLite state (dual-write with JSONL for backward compatibility)
 - Pydantic request/response schemas with manual fallback
 - Logging module throughout (replaces `print()`)
 - Type hints throughout
