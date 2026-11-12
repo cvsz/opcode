@@ -8,18 +8,18 @@
         doctor models free-models check-models \
         plan route code review fast vision general \
         orchestrate quality \
-        dashboard dashboard-open dashboard-stop dashboard-restart \
+        dashboard dashboard-open dashboard-stop dashboard-restart dashboard-status \
         optimize health reset-circuit keys key-reset \
         test lint type-check security-scan \
         frontend-lint frontend-check backend-lint backend-type-check backend-security \
-        ci-all
+        ci-all dev dev-stop
 
 # ── Help ────────────────────────────────────────────────────────────────────
 help:
 	@printf '%s\n' \
 	  'OpenCode Free Router — Complete Control Makefile' \
 	  '' \
-	  '════════════════════════════════════════════════════════════════════════════════════════════════════════════════' \
+	  '═══════════════════════════════════════════════════════════════════════════════════════════════════════════════' \
 	  'ALL-IN-ONE (start everything)' \
 	  '  make all               Start dashboard + run quality gate + run tests' \
 	  '  make start             Start dashboard service in background' \
@@ -66,7 +66,7 @@ help:
 	  '' \
 	  'FRONTEND' \
 	  '  make frontend-lint       Check dashboard frontend files exist' \
-	  '  make frontend-check      Validate frontend files present' \
+	  '  make frontend-check      Validate dashboard files present' \
 	  '' \
 	  'BACKEND' \
 	  '  make backend-lint        Run ruff on scripts/ dashboard/' \
@@ -76,12 +76,9 @@ help:
 	  'CONTROLS: MODEL=id DRY_RUN=1 MAX_MODELS=2 TIMEOUT_SECONDS=180' \
 	  'Quality: QUALITY_REQUIRED=1 TEST_COMMAND="pytest -q"'
 
-SHELL := /bin/bash
-.SHELLFLAGS := -eu -o pipefail -c
-
-# ══════════════════════════════════════════════════════════════════════════════════
+# ═══════════════════════════════════════════════════════════════════════════════════
 # CORE CONFIGURATION
-# ══════════════════════════════════════════════════════════════════════════════════
+# ═══════════════════════════════════════════════════════════════════════════════════
 
 OPENCODE ?= opencode
 TASK ?= code
@@ -104,9 +101,9 @@ DASHBOARD_PID := $(PID_DIR)/dashboard.pid
 ORCHESTRATOR_PID := $(PID_DIR)/orchestrator.pid
 QUALITY_PID := $(PID_DIR)/quality.pid
 
-# ══════════════════════════════════════════════════════════════════════════════════
+# ═══════════════════════════════════════════════════════════════════════════════════
 # ALL-IN-ONE: Start EVERYTHING with one command
-# ══════════════════════════════════════════════════════════════════════════════════
+# ═══════════════════════════════════════════════════════════════════════════════════
 
 all: start-all run-quality run-tests   ## Start ALL services, run quality gate, run tests — one command
 
@@ -175,9 +172,9 @@ clean-pids:
 
 clean: clean-pids   ## Clean all generated artifacts
 
-# ══════════════════════════════════════════════════════════════════════════════════
+# ═══════════════════════════════════════════════════════════════════════════════════
 # DISCOVERY
-# ══════════════════════════════════════════════════════════════════════════════════
+# ═══════════════════════════════════════════════════════════════════════════════════
 
 doctor:
 	@command -v "$(OPENCODE)" >/dev/null 2>&1 || { echo "❌ ERROR: OpenCode CLI not found"; exit 127; }
@@ -195,9 +192,9 @@ free-models:
 check-models: doctor
 	@python3 scripts/router.py check
 
-# ══════════════════════════════════════════════════════════════════════════════════
+# ═══════════════════════════════════════════════════════════════════════════════════
 # ROUTING — ALL TASK TYPES (modular functions)
-# ══════════════════════════════════════════════════════════════════════════════════
+# ═══════════════════════════════════════════════════════════════════════════════════
 
 plan: doctor
 	@python3 scripts/router.py plan
@@ -220,9 +217,9 @@ vision:
 general:
 	@TASK=general $(MAKE) --no-print-directory route PROMPT="$(PROMPT)" MODEL="$(MODEL)"
 
-# ══════════════════════════════════════════════════════════════════════════════════
+# ═══════════════════════════════════════════════════════════════════════════════════
 # ORCHESTRATION & QUALITY (backend functions)
-# ══════════════════════════════════════════════════════════════════════════════════
+# ═══════════════════════════════════════════════════════════════════════════════════
 
 orchestrate: doctor
 	@python3 scripts/orchestrator.py
@@ -230,9 +227,9 @@ orchestrate: doctor
 quality: doctor
 	@python3 scripts/quality_gate.py
 
-# ══════════════════════════════════════════════════════════════════════════════════
+# ═══════════════════════════════════════════════════════════════════════════════════
 # CONTROL PANEL — DASHBOARD (frontend + backend API)
-# ══════════════════════════════════════════════════════════════════════════════════
+# ═══════════════════════════════════════════════════════════════════════════════════
 
 dashboard-open:
 	@echo "🌐 Open http://$(DASHBOARD_HOST):$(DASHBOARD_PORT)/"
@@ -248,9 +245,9 @@ dashboard-stop:
 
 dashboard-restart: dashboard-stop start-dashboard   ## Restart dashboard service
 
-# ══════════════════════════════════════════════════════════════════════════════════
+# ═══════════════════════════════════════════════════════════════════════════════════
 # UTILITIES — BACKEND FUNCTIONS
-# ══════════════════════════════════════════════════════════════════════════════════
+# ═══════════════════════════════════════════════════════════════════════════════════
 
 optimize:
 	@python3 scripts/optimizer.py
@@ -267,9 +264,9 @@ keys:
 key-reset:
 	@python3 scripts/key_pool.py reset
 
-# ══════════════════════════════════════════════════════════════════════════════════
+# ═══════════════════════════════════════════════════════════════════════════════════
 # TESTING & QUALITY ASSURANCE — ALL OPTIONS
-# ══════════════════════════════════════════════════════════════════════════════════
+# ═══════════════════════════════════════════════════════════════════════════════════
 
 test:
 	@python3 -m unittest discover -s tests -v
@@ -284,11 +281,11 @@ security-scan:
 	@bandit -r scripts/ dashboard/ || true
 	@pip-audit || true
 
-ci-all: lint type-check security-scan test   ## Run full CI pipeline: lint + type-check + security + tests
+ci-all: frontend-lint frontend-check backend-lint backend-type-check backend-security test   ## Run ALL checks: lint + type-check + security + tests
 
-# ══════════════════════════════════════════════════════════════════════════════════
+# ═══════════════════════════════════════════════════════════════════════════════════
 # FRONTEND — ALL OPTIONS
-# ══════════════════════════════════════════════════════════════════════════════════
+# ═══════════════════════════════════════════════════════════════════════════════════
 
 frontend-lint:
 	@echo "🔍 Frontend lint: dashboard/app.js dashboard/style.css dashboard/index.html" \
@@ -309,9 +306,9 @@ frontend-check:
 		exit 1; \
 	fi
 
-# ══════════════════════════════════════════════════════════════════════════════════
+# ═══════════════════════════════════════════════════════════════════════════════════
 # BACKEND — ALL OPTIONS
-# ══════════════════════════════════════════════════════════════════════════════════
+# ═══════════════════════════════════════════════════════════════════════════════════
 
 backend-lint:
 	@echo "🔍 Backend lint: scripts/*.py dashboard/server.py" \
@@ -326,8 +323,16 @@ backend-security:
 	&& bandit -r scripts/ dashboard/ || true \
 	&& pip-audit || true
 
-# ══════════════════════════════════════════════════════════════════════════════════
+# ═══════════════════════════════════════════════════════════════════════════════════
 # CI PIPELINE — ALL CHECKS IN ONE COMMAND
-# ══════════════════════════════════════════════════════════════════════════════════
+# ═══════════════════════════════════════════════════════════════════════════════════
 
 ci-all: frontend-lint frontend-check backend-lint backend-type-check backend-security test   ## Run ALL checks: lint + type-check + security + tests (full CI)
+
+# ════════════════════════════════════════════════════════════════════════════════════
+# DEV WORKFLOW — FULL DEVELOPMENT CYCLE
+# ═══════════════════════════════════════════════════════════════════════════════════
+
+dev: ci-all   ## Full development cycle: lint + type-check + security + tests
+
+dev-stop: stop   ## Stop all development services
