@@ -19,5 +19,6 @@ pre{white-space:pre-wrap;overflow-wrap:anywhere;background:var(--pre);padding:10
 dialog{border:none;border-radius:11px;box-shadow:0 8px 24px rgba(0,0,0,.45);padding:20px;max-width:420px;width:90vw}dialog::backdrop{background:rgba(0,0,0,.45)}dialog h3{margin-top:0}
 .row-selectable{cursor:pointer}.row-selectable:hover{background:rgba(255,255,255,.03)}
 .spin{display:inline-block;width:14px;height:14px;border:2px solid currentColor;border-radius:50%;border-top-color:transparent;animation:spin .8s linear infinite}@keyframes spin{to{transform:rotate(360deg)}}
+.chat-msg{max-width:85%;padding:8px 12px;border-radius:12px;line-height:1.4;word-wrap:break-word}.chat-user{align-self:flex-end;background:var(--a);color:#fff;border-bottom-right-radius:2px}.chat-ai{align-self:flex-start;background:var(--l);color:var(--t);border-bottom-left-radius:2px}
 @media(max-width:850px){.cols{grid-template-columns:1fr}.grid{grid-template-columns:repeat(2,1fr)}}@media(max-width:500px){main{padding:10px}header{padding:12px}}
 @media(prefers-reduced-motion:no-preference){.bar i{transition:width .3s}}

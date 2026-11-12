@@ -21,6 +21,20 @@
   </div>
 </header>
 <main>
+  <div class="cols">
+    <section class="panel" style="grid-column: span 2">
+      <h2>Chat interface</h2>
+      <div id="chatbox" style="height:400px;overflow-y:auto;background:var(--pre);border:1px solid var(--border);padding:1rem;margin-bottom:1rem;border-radius:4px;display:flex;flex-direction:column;gap:1rem">
+        <div class="muted" style="text-align:center">Welcome to OpenCode Chat. Send a message to start.</div>
+      </div>
+      <div style="display:flex;gap:0.5rem">
+        <input id="chatInput" placeholder="Type a message… (Shift+Enter for new line)" style="flex:1">
+        <button id="chatSend">Send</button>
+      </div>
+      <div class="muted hint" style="margin-top:0.5rem">Uses 'general' task routing by default. All chat history is kept in memory.</div>
+    </section>
+  </div>
+
   <div class="grid">
     <div class="metric"><small>Attempts</small><strong id="attempts">—</strong></div>
     <div class="metric"><small>Success rate</small><strong id="rate">—</strong></div>

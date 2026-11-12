@@ -11,6 +11,7 @@ let busyCount = 0;
 let sortState = { key: null, dir: 'asc' };
 let pageState = { events: 1, pageSize: 25 };
 const rawCache = { summary: null };
+const chatHistory = [];
 
 // ---- Toast ----
 function toast(m, err) {
@@ -342,6 +343,70 @@ $('stRegen').onclick = guard(async () => {
 });
 $('stTheme').onchange = () => applyTheme($('stTheme').value);
 $('stRefresh').onchange = () => { poll(); };
+
+// ---- Chat ----
+function appendChat(role, text) {
+  const box = $('chatbox');
+  const div = document.createElement('div');
+  div.className = 'chat-msg ' + (role === 'user' ? 'chat-user' : 'chat-ai');
+  div.textContent = text;
+  box.appendChild(div);
+  box.scrollTop = box.scrollHeight;
+}
+
+const sendChat = guard(async () => {
+  const prompt = $('chatInput').value.trim();
+  if (!prompt) return;
+  $('chatInput').value = '';
+  appendChat('user', prompt);
+  chatHistory.push({ role: 'user', content: prompt });
+
+  const btn = $('chatSend');
+  setBusy(btn, true);
+  try {
+    const fullPrompt = chatHistory.map(m => `${m.role === 'user' ? 'User' : 'Assistant'}: ${m.content}`).join('\n') + '\nAssistant:';
+    const j = await api('run', {
+      task: 'general',
+      prompt: fullPrompt,
+      max_models: 0,
+      timeout: 120,
+    });
+    
+    // Poll for job completion
+    let result = null;
+    for (let i = 0; i < 30; i++) {
+      await new Promise(r => setTimeout(r, 2000));
+      const summary = await api('summary');
+      const job = summary.jobs.find(x => x.id === j.id);
+      if (job && job.status === 'success') {
+        result = job.output;
+        break;
+      } else if (job && job.status === 'failed') {
+        throw Error('Job failed: ' + job.output);
+      }
+    }
+    
+    if (result === null) throw Error('Job timed out');
+    
+    // Extract last Assistant message if it followed the pattern
+    const parts = result.split(/User:|Assistant:/i);
+    const lastMsg = (parts[parts.length - 1] || result).trim();
+    
+    appendChat('ai', lastMsg);
+    chatHistory.push({ role: 'ai', content: lastMsg });
+    load();
+  } finally {
+    setBusy(btn, false);
+  }
+});
+
+$('chatSend').onclick = sendChat;
+$('chatInput').onkeydown = e => {
+  if (e.key === 'Enter' && !e.shiftKey) {
+    e.preventDefault();
+    sendChat();
+  }
+};
 
 // ---- Export ----
 $('exportKeys').onclick = () => makeExport('keys', 'keys')('json');
