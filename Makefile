@@ -94,7 +94,7 @@ DASHBOARD_PID := $(PID_DIR)/dashboard.pid
 ORCHESTRATOR_PID := $(PID_DIR)/orchestrator.pid
 QUALITY_PID := $(PID_DIR)/quality.pid
 
-# ════════════════════════════════════════════════════════════════════════════════════
+# ═══════════════════════════════════════════════════════════════════════════════════
 # ALL-IN-ONE: Start EVERYTHING with one command
 # ═══════════════════════════════════════════════════════════════════════════════════
 
@@ -328,11 +328,26 @@ backend-security:
 # ═══════════════════════════════════════════════════════════════════════════════════
 
 ci-all: frontend-lint frontend-check backend-lint backend-type-check backend-security test   ## Run ALL checks: lint + type-check + security + tests
+# ═════════════════════════════════════════════════════════════════════════════════
+# ALL FEATURES — COMPREHENSIVE ONE-COMMAND EXECUTION
+# ═══════════════════════════════════════════════════════════════════════════════════
+
+all-features: doctor test lint type-check security-scan   ## Start ALL features: doctor, test, lint, type-check, security
+
+all-services: start-all   ## Start ALL services: dashboard + all modules
+
+all-functions: start-all route plan optimize health keys reset-circuit   ## Run ALL functions: router, optimizer, health, circuits, keys
+
+all-modular: dashboard dashboard-open dashboard-stop dashboard-restart dashboard-status   ## Start ALL modular components: dashboard + sub-modules
+
+all-options: keys key-reset optimize health reset-circuit   ## Run ALL options: key management + optimization + health + circuits
 
 # ═══════════════════════════════════════════════════════════════════════════════════
 # DEV WORKFLOW — FULL DEVELOPMENT CYCLE
 # ═══════════════════════════════════════════════════════════════════════════════════
 
+dev: ci-all   ## Full development cycle: lint + type-check + security + tests
+dev-stop: stop   ## Stop all development services
 dev: ci-all   ## Full development cycle: lint + type-check + security + tests
 
 dev-stop: stop   ## Stop all development services
