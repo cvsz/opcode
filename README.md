@@ -26,8 +26,10 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for the contribution workflow and [GOVERN
 - **`--archived`**: passed to `opencode run` when supported (`ROUTER_ARCHIVED=1`)
 
 ### Dashboard / control panel (`dashboard/server.py` + `dashboard/index.html` + `dashboard/style.css` + `dashboard/app.js`)
-- **Modular frontend**: `index.html` (structure), `style.css` (all styles, dark/light themes), `app.js` (all logic: api, tables, jobs, settings, exports, SSE, confirm dialog)
+- **Modular frontend**: `index.html` (structure), `style.css` (all styles, dark/light themes), `app.js` (all logic: api, tables, jobs, settings, exports, SSE, confirm dialog, chat)
+- **Chat interface**: multi-turn chat panel routed through the `general` free-model task route, with in-memory conversation history passed as context, automatic job polling, and Enter-to-send / Shift+Enter-for-newline input
 - **Token authentication**: per-process random API token injected into the served page, required via `X-Router-Token` on every `/api/*` call (constant-time compare via `hmac.compare_digest`); rotates after 1000 requests or via `POST /api/token/regen`; old tokens immediately invalidated
+- **Schema-validated requests**: `RunRequest` bounds prompt length (≤1,000,000 chars), task name (≤50), model ID (≤200), and numeric ranges (`max_models` 0–100, `timeout` 0–3600) before jobs are queued
 - **Security headers**: CSP with `frame-ancestors 'none'`, `X-Frame-Options: DENY`, `nosniff`, `Referrer-Policy`
 - **Host/Origin guards**: DNS-rebinding protection, non-loopback Host header rejection, cross-origin POST rejection
 - **Rate limiting**: token bucket (30 requests per 60 seconds per IP) on mutating endpoints
@@ -64,6 +66,16 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for the contribution workflow and [GOVERN
 - OpenCode CLI installed and provider credentials configured.
 - Python 3.10+, Bash, GNU Make.
 - `timeout` is optional; used for per-model command deadlines when installed.
+
+## Performance
+- **Model catalogue cache**: `opencode models` results cached in memory for 30 s (`OPENCODE_MODELS_CACHE_TTL`), eliminating repeated subprocess spawns per route.
+- **Circuit / key-pool state caches**: `circuits.json` and `key-pools.json` reads are cached with a 5 s TTL (`CIRCUIT_CACHE_TTL`, `KEY_POOL_CACHE_TTL`) and invalidated on writes.
+- **Task route cache**: per-task candidate lists parsed once per process (`_TASK_CACHE`).
+- **Dashboard summary cache**: `/api/summary` aggregation cached for 2 s to avoid re-parsing `events.jsonl` on every SSE refresh; key status cached 5 s.
+- **SQLite WAL mode**: `state/router.db` uses journal_mode=WAL with per-statement connections and a 30 s busy timeout, so dashboard jobs and router processes can write concurrently.
+
+## Structured logging
+Set `LOG_FORMAT=json` to emit one JSON object per log line (`timestamp`, `level`, `name`, `message`, plus any `extra` fields) from both `scripts/router.py` and `dashboard/server.py` — ready for ingestion by journald, Loki, or any JSON log collector. Default is human-readable text.
 
 ## Install
 ```bash
@@ -212,6 +224,9 @@ Security boundaries:
 | `DASHBOARD_PORT` | `8765` | dashboard bind port |
 | `DASHBOARD_TOKEN_BYTES` | `24` | API token length |
 | `LOG_LEVEL` | `INFO` | logging level |
+| `LOG_FORMAT` | `text` | `json` for structured JSON logging (router + dashboard) |
+| `OPENCODE_MODELS_CACHE_TTL` | `30` | seconds to cache `opencode models` output |
+| `CIRCUIT_CACHE_TTL` / `KEY_POOL_CACHE_TTL` | `5` | seconds to cache circuit / key-pool state reads |
 | `OPENCODE_SERVER` | unset | if set, router calls `opencode serve` v2 API (`/api/runs`) instead of CLI subprocess |
 
 `opencode-cli-export/` holds `--help` dumps of the installed OpenCode CLI, used as the reference for flags the router relies on.
@@ -225,7 +240,7 @@ All endpoints require `X-Router-Token` header (constant-time compare) except SSE
 |---|---|---|
 | `GET /` | GET | Serve control panel HTML with injected token |
 | `GET /api/summary` | GET | Telemetry summary: events, models, circuits, keys, jobs |
-| `GET /api/health` | GET | Circuit and key-pool state |
+| `GET /api/health` | GET | Deep health: status, version, key-pool slots, circuit state (for external monitors) |
 | `GET /api/stream` | GET | SSE real-time updates |
 | `GET /api/task-config?task=<t>` | GET | Ordered model list for a task |
 | `GET /api/catalogue` | GET | Installed model catalogue via `opencode models` |
@@ -270,11 +285,13 @@ The router can call `opencode serve`'s HTTP API when `OPENCODE_SERVER` is set (r
 
 ## Testing
 ```bash
-python -m unittest discover -s tests -v          # 67 tests
+python -m unittest discover -s tests -v          # 79 tests (incl. JSON logging, SQLite concurrency)
 python -m py_compile scripts/*.py dashboard/server.py
 shellcheck scripts/load-keys.sh
 make -n help test keys optimize >/dev/null
 ```
+
+`scripts/security_fuzzer.py` sends oversized / out-of-range / invalid payloads at `/api/run`; the server must respond 4xx and never crash (run with the dashboard token as argv[1]).
 
 ## License
 See repository root for license information.

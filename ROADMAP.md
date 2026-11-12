@@ -23,6 +23,18 @@
 7. Dashboard hardening: rate limiting, IP/UA audit log, token rotation, settings persistence
 8. Pydantic validation with CI-safe manual fallback
 
+## Completed (enterprise hardening, 2026-11-12)
+
+- Structured JSON logging (`LOG_FORMAT=json`) for router + dashboard
+- SQLite WAL mode with per-statement connections; concurrent-write test
+- Request schema validation (bounded prompt/task/model/limit values)
+- `/api/health` deep-check endpoint for external monitors
+- Performance caches: model catalogue, circuit/key-pool state, task routes, dashboard summary
+- Frontend chat interface on the free-model `general` route
+- Security fuzzer (`scripts/security_fuzzer.py`) — server answers 4xx, never crashes
+- All-in-one Makefile control center (`make all`, `ci-all`, service lifecycle)
+- 79 tests green; ruff, mypy, bandit (HIGH=0) clean
+
 ## Planned (optional)
 
 - Real-time SSE dashboard enhancement with job streams
