@@ -268,9 +268,8 @@ def fetch_json(
 ) -> str:
     """Fetch a URL with retries, rate-limit/backoff and SSRF-safe scheme guard.
 
-    Only http:// and https:// schemes are permitted. Redirects are not followed
-    for bearer-token safety (no auth is sent to build.nvidia.com, but the guard
-    is kept uniform).
+    Only http:// and https:// schemes are permitted. No authorization headers are
+    sent, so redirect following is safe for this public catalog endpoint.
     """
     parsed = parse.urlparse(url)
     if parsed.scheme not in ("http", "https"):

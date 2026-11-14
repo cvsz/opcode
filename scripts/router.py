@@ -48,7 +48,8 @@ ROUTER_ARCHIVED = _cfg.router_archived
 OPENCODE_QUERY_TIMEOUT = _cfg.open_code_query_timeout
 NVIDIA_STATE = STATE / "nvidia-models.json"
 _NVIDIA_RATE_LOCK = threading.Lock()
-_NVIDIA_LAST_REQUEST = 0.0
+# Mutable container avoids a `global` reassignment in _nvidia_rate_limit().
+_NVIDIA_LAST_REQUEST: list[float] = [0.0]
 _NVIDIA_BENCHED: dict[str, float] = {}
 
 # Models cache wrapper
@@ -501,7 +502,6 @@ class NvidiaTransportError(RuntimeError):
 
 
 def _nvidia_rate_limit() -> None:
-    global _NVIDIA_LAST_REQUEST
     try:
         rpm = int(os.getenv("NVIDIA_RPM", "35"))
     except ValueError as exc:
@@ -511,10 +511,10 @@ def _nvidia_rate_limit() -> None:
     interval = 60.0 / rpm
     with _NVIDIA_RATE_LOCK:
         now = time.monotonic()
-        delay = _NVIDIA_LAST_REQUEST + interval - now
+        delay = _NVIDIA_LAST_REQUEST[0] + interval - now
         if delay > 0:
             time.sleep(delay)
-        _NVIDIA_LAST_REQUEST = time.monotonic()
+        _NVIDIA_LAST_REQUEST[0] = time.monotonic()
 
 
 def _nvidia_request(path: str, api_key: str, *, payload: dict[str, Any] | None = None,
@@ -1014,7 +1014,10 @@ def route(args: Any, config_obj: cfg_mod.Config | None = None) -> int:
                         }
                     )
                     break
-                category, answer, duration_s, exit_code = classify_from_events(events)
+                # classify_from_events returns answer: str|None and exit_code: int|None;
+                # the variables are reused across branches (typed str/int from the NVIDIA path),
+                # and None is handled at every downstream use site.
+                category, answer, duration_s, exit_code = classify_from_events(events)  # type: ignore[assignment]
                 success = category == "success"
                 duration = duration_s or round(time.monotonic() - start, 3)
                 circuit_update(model, category, success)
@@ -1085,7 +1088,9 @@ def route(args: Any, config_obj: cfg_mod.Config | None = None) -> int:
                 if os.getenv("OPENCODE_FORMAT_JSON", "0") == "1":
                     # Parse NDJSON from stdout
                     stdout_lines = (proc.stdout or "").splitlines()
-                    category, answer, duration_s, exit_code = classify_from_ndjson(stdout_lines)
+                    # classify_from_ndjson returns answer: str|None and exit_code: int|None;
+                    # None is handled at every downstream use site.
+                    category, answer, duration_s, exit_code = classify_from_ndjson(stdout_lines)  # type: ignore[assignment]
                     success = category == "success"
                     duration = duration_s or round(time.monotonic() - start, 3)
                     code = exit_code if exit_code is not None else (0 if success else 1)
