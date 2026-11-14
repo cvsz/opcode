@@ -15,7 +15,7 @@ The OpenCode Free-Model Router was hardened to production/enterprise grade in a 
 | Performance optimization | ✅ | 4-layer TTL caching; `opencode models` subprocess eliminated from hot path |
 | Observability | ✅ | `LOG_FORMAT=json` structured logging + `/api/health` deep-check endpoint + log rotation + correlation IDs |
 | Reliability | ✅ | SQLite WAL mode; 10-thread × 50-write concurrency test lossless; log rotation |
-| Test suite | ✅ | 96/96 passing (stable across 3 consecutive runs) |
+| Test suite | ✅ | 143/143 passing (stable across 3 consecutive runs) |
 | Type safety | ✅ | mypy: no issues in 11 source files |
 | Lint | ✅ | ruff: all checks passed |
 | Pen-test tooling | ✅ | `scripts/security_fuzzer.py` — server answers 4xx, never crashes |

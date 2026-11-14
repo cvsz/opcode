@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # opcode — single-file OpenCode runner with live, fail-closed free-model discovery.
 # Requires: Bash 4+, Python 3.9+, curl, and OpenCode CLI.
+# Note: SC2163 is a known false positive here — export "$key" correctly exports
+# the dynamically-named variable set by printf -v "$key".
 set -Eeuo pipefail
 IFS=$'\n\t'
 umask 077
