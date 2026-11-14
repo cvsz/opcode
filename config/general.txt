@@ -1,6 +1,12 @@
-nvidia/nvidia/nemotron-3-nano-omni-30b-a3b-reasoning
-nvidia/nvidia/nemotron-3-ultra-550b-a55b
-nvidia/nvidia/nemotron-3.5-content-safety
-nvidia/nvidia/nemotron-3.5-lightning-30b-a3b
-nvidia/nvidia/nemotron-3.5-super-vl-120b-a12b
-nvidia/nvidia/nemotron-voicechat
+# Ordered task candidates. NVIDIA IDs use the canonical :free catalog suffix.
+nvidia/deepseek-ai/deepseek-v4.1-flash:free
+nvidia/nvidia/nemotron-3-ultra-550b-a55b:free
+nvidia/nvidia/nemotron-3.5-lightning-30b-a3b:free
+nvidia/nvidia/nemotron-3.5-super-vl-120b-a12b:free
+nvidia/openai/gpt-oss-20b:free
+nvidia/z-ai/glm-5.3-flash:free
+opencode/beam-free
+opencode/mimo-v2.6-flash-free
+opencode/deepseek-v4.1-flash-free
+openrouter/deepseek-r1-free
+openrouter/google/gemma-4-31b-it:free

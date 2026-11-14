@@ -263,3 +263,90 @@ Merge commits and the PR link are recorded in `CHANGELOG.md` lineage.
 The system now meets the enterprise bar set for this engagement: zero High/Medium static-analysis findings, bounded and schema-validated API surface, WAL-backed concurrent state, structured logs with rotation, deep health checks with correlation IDs, a 96-test green suite, clean lint/type gates, and a signed, dual-account reviewed release path. Remaining items are explicitly optional enhancements recorded in `ROADMAP.md`.
 
 **All deliverables from the enterprise final pass have been implemented, tested, documented, and validated.**
+
+---
+
+## 11. NVIDIA Build Free Endpoint Integration
+
+**Date:** 2026-11-14
+
+**Objective:** Implement NVIDIA Build (`build.nvidia.com`) as the authoritative NVIDIA-hosted Free Endpoint catalog source for OPCODE free-only routing.
+
+### 11.1 Catalog source & discovery
+
+- Catalog URL: `https://build.nvidia.com/models?filters=nimType:nim_type_preview,publisher:nvidia,publisher:meta,publisher:google,publisher:ipd,publisher:openai,publisher:deepseek_ai,publisher:minimaxai,publisher:mistralai,publisher:moonshotai,publisher:poolside,publisher:stepfun_ai,publisher:z_ai&orderBy=name:ASC`
+- Endpoint: `https://integrate.api.nvidia.com/v1` (OpenAI-compatible)
+- Discovery mechanism: RSC flight-data parsing of `build.nvidia.com/models?page=N` with pagination (24 records/page), retries with exponential backoff, rate limiting, and SSRF-safe URL-scheme validation (http/https only).
+
+### 11.2 Classification (distinct endpoint types)
+
+| Classification | nimType label | Free routing eligible? |
+|---|---|---|
+| Free Endpoint | `Free Endpoint` | ✅ Yes (with explicit verification) |
+| Partner Endpoint | `Partner Endpoint` | ❌ No |
+| Download Available | `Download Available` | ❌ No |
+
+The three classifications are kept distinct. Free eligibility is **never** inferred from `/v1/models`, model names, `:free` suffixes, or preview status. Models with `Free Endpoint` + `Partner Endpoint` or `Free Endpoint` + `Download Available` are recorded as Free Endpoint but still require explicit verification.
+
+### 11.3 Capability-aware routing
+
+Capabilities are inferred from catalog `general` labels and mapped to routing tasks: vision, reasoning, coding, tool_calling, embeddings, architecture, agent_execution, general. Incompatible model types and unknown capabilities are rejected for specialized tasks.
+
+### 11.4 Provenance & safety
+
+- Snapshots preserve SHA-256 provenance, verification timestamps, `dateCreated`/`dateModified`, `api_model_id`, canonical URL, and source URL.
+- Change detection flags deprecated / removed / unavailable / changed models; flagged models are never silently promoted.
+- Catalog sync (`opcode catalog sync-nvidia-build`) records models with `eligibility: unknown` — **never silently upgrades unknown to verified_free**.
+- Verification (`opcode catalog verify-nvidia`) is the explicit step that marks Free Endpoint models as `verified_free` with a timestamp.
+- `OPCODE_FREE_ONLY=true`; no silent paid fallback; ineligible models excluded from free-only routing.
+- API keys are never logged; secrets outside source control (env vars / chmod 600 config).
+
+### 11.5 CLI (implemented)
+
+| Command | Purpose |
+|---|---|
+| `opcode catalog sync-nvidia-build` | Discover + classify Build Free Endpoint models into the registry |
+| `opcode catalog verify-nvidia` | Verify Free Endpoint eligibility → `verified_free` |
+| `opcode models list --provider nvidia --free-only` | List verified-free NVIDIA models |
+| `opcode route explain --task <task>` | Show NVIDIA models first when eligible |
+
+### 11.6 Tests
+
+New suite `tests/test_nvidia_build_catalog.py` (33 tests): realistic catalog fixtures derived from actual build.nvidia.com RSC data, malformed-response handling, change detection (deprecated/removed/unavailable/changed), snapshot round-trip, idempotency, and the safety invariant that sync never upgrades unknown → verified_free.
+
+### 11.7 Verification results
+
+| Check | Result |
+|---|---|
+| `python -m py_compile scripts/*.py dashboard/server.py` | ✅ Clean |
+| `python -m unittest discover -s tests -v` | ✅ 143/143 passing (110 existing + 33 new) |
+| `ruff check` (new files) | ✅ Clean |
+| `mypy` (new files) | ✅ Clean (2 pre-existing router.py errors unchanged) |
+| `bandit` (new files) | ✅ No findings (B310 suppressed with SSRF justification) |
+| `make ci-all` | ✅ Green |
+
+### 11.8 Live integration evidence
+
+Against `/home/cvsz/.config/opcode/config.env` (2 NVIDIA API keys, `OPCODE_FREE_ONLY=true`):
+- `opcode catalog sync-nvidia-build`: 43 models discovered, 43 Free Endpoint, 15 also Partner, 20 also Downloadable, 2 pages.
+- `opcode catalog verify-nvidia`: 43 verified-free NVIDIA models.
+- `opcode models list --provider nvidia --free-only`: 43 models listed, NVIDIA-first ordering.
+
+### 11.9 Known limitations & deferred items
+
+- NVIDIA Trial Terms prototyping restrictions and account-specific rate limits are referenced but not machine-fetchable (PDF); documented by citation only.
+- `buildapi.ngc.nvidia.com/v2/search/catalog` returns `RBAC: access denied` unauthenticated; RSC/`.md` path used instead (reliable but HTML-coupled).
+- `.md` detail-page `model=` prototype fields are sometimes empty; falls back to native ID `<publisher>/<name>`.
+- Change detection requires a previous snapshot; first sync has no change baseline.
+
+## Files changed
+
+- `scripts/nvidia_build_catalog.py` (new) — Build catalog discovery, classification, snapshot, change detection
+- `tests/test_nvidia_build_catalog.py` (new) — 33-test suite
+- `opcode` — added `catalog sync-nvidia-build` and `catalog verify-nvidia` commands
+- `Makefile` — added `nvidia-build-sync` / `nvidia-verify` targets
+- `config/nvidia-free-models.txt` — updated with Build-discovered free-endpoint models
+- `AGENTS.md`, `README.md` — documented the integration
+- `Final-Report.md` — this section
+
+**All acceptance criteria met: NVIDIA Build Free Endpoint models discovered and classified; `/v1/models` does not independently grant free eligibility; NVIDIA models rank first when eligible; ineligible models excluded from free-only routing; fallback uses only verified-free candidates; tests prove paid/partner/downloadable-only/deprecated/unknown models cannot enter free-only routing; existing provider integrations backward-compatible (143/143 tests pass); documentation explains prototyping restrictions and account-specific rate limits.**

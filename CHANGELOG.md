@@ -88,3 +88,46 @@ Single source of truth merging the five archived releases (v1 → v5). v5 was th
 ## Known gaps (unchanged from source)
 - `router.py` events no longer carry `event_id` (dropped in v4); nothing consumes it.
 - v2 vision/general candidate lists contained two extra `gemma-4-*` entries removed in v3; left removed.
+
+
+## OPCODE 5.1.0 — NVIDIA Direct Provider (2026-11-14)
+
+- Added direct NVIDIA NIM `/v1/chat/completions` execution to the canonical Bash CLI; NVIDIA models no longer pass through `opencode run`.
+- Kept identifier boundaries explicit: catalog `nvidia/<publisher>/<model>:free`, OPCODE runtime `nvidia/<publisher>/<model>`, NVIDIA API payload `<publisher>/<model>`.
+- Added provider-level RPM limiting, bounded request timeouts, per-model cooldowns for rate-limit/model rejection, key rotation on authentication failures, and redirect refusal for bearer-authenticated requests.
+- Added NVIDIA numbered key slots (`NVIDIA_API_KEY_1..NVIDIA_API_KEY_8`) and single/pool key support.
+- Added task-specific ordered route allowlists for code, review, fast, general, vision, and agent execution; NVIDIA direct models are excluded from `agent_execution`.
+- Integrated the same direct NVIDIA discovery and inference path into `scripts/router.py` for `make route`.
+- Added local HTTP integration tests covering catalog discovery, canonical/native ID conversion, direct inference, key rotation, provider filtering, and redirect rejection.
+- Safety boundary: `:free` is a catalog suffix and allowlist convention, not evidence of current pricing, quota, or entitlement. `OPCODE_FREE_ONLY=true` still requires `verified_free`.
+- Direct NVIDIA adapter is text inference only; it does not provide OpenCode tools or filesystem execution.
+
+## OPCODE 5.1.1 — NVIDIA Build Free Endpoint Catalog (2026-11-14)
+
+- Added `scripts/nvidia_build_catalog.py`: discovers models from `build.nvidia.com` via RSC flight-data parsing with pagination, retries, backoff, rate limiting, and SSRF-safe URL validation.
+- Classifies endpoint types (`Free Endpoint` / `Partner Endpoint` / `Download Available`) as distinct; only `Free Endpoint` is eligible for free inference routing.
+- Free eligibility never inferred from `/v1/models`, model names, `:free` suffixes, or preview status.
+- Resolves NIM API model IDs from official `.md` detail-page prototype snippets; falls back to native `<publisher>/<name>`.
+- Snapshots preserve SHA-256 provenance, verification timestamps, `dateCreated`/`dateModified`, `api_model_id`, canonical URL, and source URL.
+- Change detection flags deprecated / removed / unavailable / changed models; flagged models are never silently promoted.
+- Added `opcode catalog sync-nvidia-build` (discovery only, `eligibility: unknown`) and `opcode catalog verify-nvidia` (explicit verification → `verified_free`). Sync never silently upgrades unknown → verified_free.
+- Added Makefile targets `nvidia-build-sync` and `nvidia-verify`.
+- Added `tests/test_nvidia_build_catalog.py` (33 tests): realistic catalog fixtures, malformed responses, change detection, snapshot round-trip, idempotency, and the never-upgrade-unknown safety invariant.
+- Updated `config/nvidia-free-models.txt` with Build-discovered free-endpoint models.
+- Capability-aware routing inferred from catalog `general` labels (vision, reasoning, coding, tool_calling, embeddings, architecture, agent_execution, general); incompatible capabilities rejected for specialized tasks.
+- 143/143 tests pass (110 existing + 33 new); lint/type/security clean for new files.
+
+## OPCODE 5.1.2 — OpenRouter Free Models (2026-11-14)
+
+- Added `config/openrouter-free-models.txt`: explicit OpenRouter free endpoint allowlist (17 models), mirroring the NVIDIA Build `nvidia-free-models.txt` pattern. Kept distinct from `Downloadable` / `Partner Endpoint` classifications.
+- OpenRouter free eligibility established via `opcode catalog sync-openrouter` (zero-priced entries from `/v1/models` marked `verified_free`) — never inferred from model names or `:free` suffixes alone.
+- Added missing OpenRouter free models to `config/free-models.txt` (baidu/ernie-5.5-flash-preview, dots-studio/dots-3-note-preview, google/lyria-3-clip-preview, google/lyria-3-pro-preview, inclusionai/ling-3.2-flash, particle-ai/particle-1).
+- 143/143 tests pass; compile clean.
+
+## OPCODE 5.1.3 — OpenCode + Kilo Free Models (2026-11-14)
+
+- Added `config/opencode-free-models.txt`: explicit OpenCode free endpoint allowlist (10 models), mirroring the NVIDIA Build `nvidia-free-models.txt` pattern.
+- Added `config/kilo-free-models.txt`: explicit Kilo free endpoint allowlist (10 models), mirroring the NVIDIA Build `nvidia-free-models.txt` pattern.
+- Reorganized `config/free-models.txt` by provider (opencode, kilo, openrouter, other) and removed duplicate entries.
+- OpenCode / Kilo free eligibility established via `catalog import` from free-labelled catalogue entries — never inferred from model names or `:free` suffixes alone. Imported models remain `unknown` until explicitly verified.
+- 143/143 tests pass; compile clean.

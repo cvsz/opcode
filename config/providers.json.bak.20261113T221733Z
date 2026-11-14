@@ -1,0 +1,63 @@
+{
+  "version": 1,
+  "security": {
+    "secrets_in_repository": false,
+    "key_sources": "environment variables only",
+    "never_log_key_values": true
+  },
+  "providers": {
+    "openrouter": {
+      "auth_env": "OPENROUTER_API_KEY",
+      "key_slots": [
+        "OPENROUTER_API_KEY_1",
+        "OPENROUTER_API_KEY_2",
+        "OPENROUTER_API_KEY_3"
+      ]
+    },
+    "kilo": {
+      "auth_env": "KILO_API_KEY",
+      "key_slots": [
+        "KILO_API_KEY_1",
+        "KILO_API_KEY_2",
+        "KILO_API_KEY_3"
+      ]
+    },
+    "opencode": {
+      "auth_env": "OPENCODE_API_KEY",
+      "key_slots": [
+        "OPENCODE_API_KEY_1",
+        "OPENCODE_API_KEY_2",
+        "OPENCODE_API_KEY_3"
+      ]
+    },
+    "dmr": {
+      "auth_env": "DMR_API_KEY",
+      "key_slots": [
+        "DMR_API_KEY_1",
+        "DMR_API_KEY_2",
+        "DMR_API_KEY_3"
+      ]
+    },
+    "zeaz": {
+      "auth_env": "ZEAZ_API_KEY",
+      "key_slots": [
+        "ZEAZ_API_KEY_1",
+        "ZEAZ_API_KEY_2",
+        "ZEAZ_API_KEY_3"
+      ]
+    },
+    "nvidia": {
+      "auth_env": "NVIDIA_API_KEY",
+      "key_slots": [
+        "NVIDIA_API_KEY_1",
+        "NVIDIA_API_KEY_2",
+        "NVIDIA_API_KEY_3",
+        "NVIDIA_API_KEY_4",
+        "NVIDIA_API_KEY_5",
+        "NVIDIA_API_KEY_6",
+        "NVIDIA_API_KEY_7",
+        "NVIDIA_API_KEY_8"
+      ]
+    }
+  }
+}

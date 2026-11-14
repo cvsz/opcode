@@ -45,6 +45,19 @@
         "ZEAZ_API_KEY_2",
         "ZEAZ_API_KEY_3"
       ]
+    },
+    "nvidia": {
+      "auth_env": "NVIDIA_API_KEY",
+      "key_slots": [
+        "NVIDIA_API_KEY_1",
+        "NVIDIA_API_KEY_2",
+        "NVIDIA_API_KEY_3",
+        "NVIDIA_API_KEY_4",
+        "NVIDIA_API_KEY_5",
+        "NVIDIA_API_KEY_6",
+        "NVIDIA_API_KEY_7",
+        "NVIDIA_API_KEY_8"
+      ]
     }
   }
 }

@@ -24,6 +24,7 @@ help:
 	  '  make models            List available OpenCode models' \
 	  '  make free-models       Show free models catalogue' \
 	  '  make check-models      Verify all configured models are available' \
+  '  make nvidia-sync      Discover NVIDIA Direct API models' \
 	  '' \
 	  'ROUTING (single model task execution)' \
 	  '  make plan TASK=code            Show candidate route for task' \
@@ -122,7 +123,7 @@ $(DASHBOARD_PID): | $(PID_DIR)
 	@if [ -f "$(DASHBOARD_PID)" ] && kill -0 "$$(cat "$(DASHBOARD_PID)")" 2>/dev/null; then \
 		echo "✅ Dashboard already running (PID $$(cat "$(DASHBOARD_PID)")) on http://$(DASHBOARD_HOST):$(DASHBOARD_PORT)/"; \
 	else \
-		@mkdir -p "$(PID_DIR)"; \
+		mkdir -p "$(PID_DIR)"; \
 		nohup python3 dashboard/server.py --host "$(DASHBOARD_HOST)" --port "$(DASHBOARD_PORT)" \
 			> "$(PID_DIR)/dashboard.log" 2>&1 & \
 		echo $$! > "$(DASHBOARD_PID)"; \
@@ -196,6 +197,15 @@ free-models:
 
 check-models: doctor
 	@python3 scripts/router.py check
+
+nvidia-sync:
+	@./opcode catalog sync-nvidia
+
+nvidia-build-sync: doctor  ## Discover NVIDIA Build Free Endpoint catalog (classifies, never verifies)
+	@./opcode catalog sync-nvidia-build
+
+nvidia-verify: doctor  ## Verify NVIDIA Free Endpoint eligibility (marks verified_free)
+	@./opcode catalog verify-nvidia
 
 # =============================================================================
 # ROUTING — ALL TASK TYPES (modular functions)

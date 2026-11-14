@@ -9,3 +9,5 @@ __pycache__/
 .venv/
 # Local artifact of an already-applied commit; never commit it.
 0001-*.patch
+opcode-ssot/
+opcode-ssot

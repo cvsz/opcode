@@ -13,7 +13,7 @@ import os
 import pathlib
 import queue
 import secrets
-import subprocess  # nosec: B404 — intentional; dashboard runs subprocess with shell=False and validated list args only  # nosec B404 - subprocess used for controlled CLI calls with shell=False
+import subprocess  # nosec B404 # intentional; dashboard runs subprocess with shell=False, validated list args
 import sys
 import threading
 import time
@@ -332,7 +332,7 @@ def start_job(d: dict[str, Any]) -> dict[str, Any]:
         if d.get("request_id"):
             env["ROUTER_REQUEST_ID"] = d["request_id"]
         try:
-            p = subprocess.Popen(  # nosec B603 - controlled command list, shell=False
+            p = subprocess.Popen(  # nosec B603 # controlled command list, shell=False
                 cmd, cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                 text=True, env=env,
             )
@@ -515,7 +515,7 @@ class H(http.server.BaseHTTPRequestHandler):
                     "circuits": circuits,
                 })
             elif u.path == "/api/catalogue":
-                p = subprocess.run(  # nosec B603 - controlled command list, shell=False
+                p = subprocess.run(  # nosec B603 # controlled command list, shell=False
                     [os.getenv("OPENCODE", "opencode"), "models"],
                     cwd=ROOT, capture_output=True, text=True, timeout=30, check=False,
                 )
@@ -623,7 +623,7 @@ class H(http.server.BaseHTTPRequestHandler):
                     t = d.get("task")
                     if t not in TASKS:
                         raise ValueError("Invalid task")
-                    plan_proc = subprocess.run(  # nosec B603 - controlled command list, shell=False
+                    plan_proc = subprocess.run(  # nosec B603 # controlled command list, shell=False
                         [os.getenv("PYTHON", "python3"), str(ROOT / "scripts/router.py"), "plan", "--task", t],
                         cwd=ROOT, capture_output=True, text=True, timeout=30, check=False,
                     )
@@ -692,7 +692,7 @@ class H(http.server.BaseHTTPRequestHandler):
                     t = d.get("task")
                     if t not in TASKS:
                         raise ValueError("Invalid task")
-                    plan_proc = subprocess.run(  # nosec B603 - controlled command list, shell=False
+                    plan_proc = subprocess.run(  # nosec B603 # controlled command list, shell=False
                         [os.getenv("PYTHON", "python3"), str(ROOT / "scripts/router.py"), "plan", "--task", t],
                         cwd=ROOT, capture_output=True, text=True, timeout=30, check=False,
                     )

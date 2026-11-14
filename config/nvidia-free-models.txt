@@ -1,0 +1,48 @@
+# Operator-maintained NVIDIA direct endpoint allowlist.
+# Populated from NVIDIA Build catalog Free Endpoint discovery
+# (`opcode catalog sync-nvidia-build` + `opcode catalog verify-nvidia`).
+# :free is a catalog label, not proof of current quota or pricing.
+# Only models explicitly verified as Free Endpoint may enter free-only routing.
+nvidia/deepseek-ai/deepseek-v4.1-flash:free
+nvidia/google/gemma-4-31b-it:free
+nvidia/google/google-paligemma:free
+nvidia/ipd/rfd4-proteina:free
+nvidia/meta/llama-3.2-90b-vision-instruct:free
+nvidia/meta/llama-guard-4-12b:free
+nvidia/meta/muse-glimmer-30b:free
+nvidia/minimaxai/minimax-m3.1-flash:free
+nvidia/mistralai/mistral-large-4-1t-a52b:free
+nvidia/moonshotai/kimi-k3_1-pro:free
+nvidia/nvidia/active-speaker-detection:free
+nvidia/nvidia/bevformer:free
+nvidia/nvidia/bnr:free
+nvidia/nvidia/body-pose:free
+nvidia/nvidia/cosmos-transfer2_5-2b:free
+nvidia/nvidia/cosmos3-nano:free
+nvidia/nvidia/cosmos3-nano-reasoner:free
+nvidia/nvidia/ising-calibration-1-35b-a3b:free
+nvidia/nvidia/ising-calibration-1.5-31b:free
+nvidia/nvidia/kumo-relational:free
+nvidia/nvidia/kumo-tabular:free
+nvidia/nvidia/llama-3_1-nemotron-safety-guard-8b-v3:free
+nvidia/nvidia/magpie-tts-zeroshot:free
+nvidia/nvidia/nemotron-3-embed-1b:free
+nvidia/nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free
+nvidia/nvidia/nemotron-3-ultra-550b-a55b:free
+nvidia/nvidia/nemotron-3.5-bolt-e4b:free
+nvidia/nvidia/nemotron-3.5-content-safety:free
+nvidia/nvidia/nemotron-3.5-lightning-30b-a3b:free
+nvidia/nvidia/nemotron-3.5-parse:free
+nvidia/nvidia/nemotron-3.5-super-vl-120b-a12b:free
+nvidia/nvidia/nemotron-3_5-embed-1b:free
+nvidia/nvidia/nemotron-3_5-embed-8b:free
+nvidia/nvidia/nemotron-3_5-rerank-8b:free
+nvidia/nvidia/riva-translate-4b-instruct-v2:free
+nvidia/nvidia/sparsedrive:free
+nvidia/nvidia/streampetr:free
+nvidia/nvidia/studiovoice:free
+nvidia/nvidia/synthetic-video-detector:free
+nvidia/openai/gpt-oss-20b:free
+nvidia/poolside/laguna-xs-2.1:free
+nvidia/stepfun-ai/step-5-preview:free
+nvidia/z-ai/glm-5-3-flash:free

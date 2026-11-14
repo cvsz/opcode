@@ -1,0 +1,16 @@
+Traceback (most recent call last):
+  File "/mnt/d/data/opcode/dashboard/server.py", line 775, in <module>
+    main()
+    ~~~~^^
+  File "/mnt/d/data/opcode/dashboard/server.py", line 764, in main
+    s = http.server.ThreadingHTTPServer((a.host, a.port), H)
+  File "/usr/lib/python3.14/socketserver.py", line 457, in __init__
+    self.server_bind()
+    ~~~~~~~~~~~~~~~~^^
+  File "/usr/lib/python3.14/http/server.py", line 148, in server_bind
+    socketserver.TCPServer.server_bind(self)
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^
+  File "/usr/lib/python3.14/socketserver.py", line 478, in server_bind
+    self.socket.bind(self.server_address)
+    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^
+OSError: [Errno 98] Address already in use

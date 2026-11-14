@@ -1,3 +1,5 @@
+# Ordered task candidates. NVIDIA IDs use the canonical :free catalog suffix.
+nvidia/nvidia/nemotron-3.5-super-vl-120b-a12b:free
 opencode/nemotron-3.5-super-vl-free
 kilo/nvidia/nemotron-3.5-super-vl:free
 openrouter/nvidia/nemotron-3.5-super-vl:free

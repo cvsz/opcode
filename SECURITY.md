@@ -32,7 +32,7 @@ The control panel is a **local-only** tool. It binds to `127.0.0.1` by default a
 - **SQLite concurrency (NEW)**: `scripts/db.py` opens a per-statement connection with `journal_mode=WAL`, `synchronous=NORMAL`, and a 30 s busy timeout; 10 threads × 50 writes verified lossless in `tests/test_sqlite_concurrency.py`.
 - **Request correlation IDs (NEW)**: `X-Request-ID` header (auto-generated if missing) propagated through dashboard audit log, SQLite events, and router subprocess via `ROUTER_REQUEST_ID` env var. Enables end-to-end request tracing.
 - **Log rotation (NEW)**: `scripts/logging_setup.py` provides `RotatingFileHandler` support; dashboard configurable via `--log-file`, `--log-max-bytes`, `--log-backup-count` CLI args.
-- **B105 false positives**: `None` values in `key_candidates()` marked with `# nosec` — they are Python `None`, not hardcoded passwords.
+- **B105 false positives**: `None` values in `key_candidates()` — they are Python `None`, not hardcoded passwords. Suppressed with a blanket `# nosec` (not B105-specific): sibling string keys share the dict's line range, so a B105-specific suppression triggers bandit's "nosec encountered (B105), but no failed test" warnings on those, and bandit's nosec parser rejects any free text after the id.
 
 ## Reporting
 

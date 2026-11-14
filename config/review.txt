@@ -1,5 +1,10 @@
+# Ordered task candidates. NVIDIA IDs use the canonical :free catalog suffix.
+nvidia/deepseek-ai/deepseek-v4.1-flash:free
+nvidia/z-ai/glm-5.3-flash:free
+nvidia/openai/gpt-oss-20b:free
+nvidia/nvidia/nemotron-3-ultra-550b-a55b:free
+nvidia/nvidia/nemotron-3.5-lightning-30b-a3b:free
 opencode/beam-free
-opencode/mimo-v2.6-flash-free
 opencode/glm-5.3-flash-free
 openrouter/deepseek-r1-free
 openrouter/meta-llama-3.3-70b-free

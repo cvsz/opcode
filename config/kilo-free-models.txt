@@ -1,0 +1,15 @@
+# Operator-maintained Kilo free endpoint allowlist.
+# Populated from kilo catalogue free-labelled models
+# (kilo/*:free). Zero price / free label in a catalogue does not
+# guarantee account eligibility, quota, or live availability.
+# Only explicitly verified_free models enter free-only routing.
+kilo/cohere/north-mini-code:free
+kilo/dots-studio/dots-3-note-preview:free
+kilo/liquid/lfm-3-1.7b:free
+kilo/nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free
+kilo/nvidia/nemotron-3-ultra-550b-a55b:free
+kilo/nvidia/nemotron-3.5-lightning:free
+kilo/nvidia/nemotron-3.5-super-vl:free
+kilo/thinkingmachines/inkling-2-small:free
+kilo/kilo-auto/free
+kilo/openrouter/free

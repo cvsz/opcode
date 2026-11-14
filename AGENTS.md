@@ -64,6 +64,12 @@ python scripts/router.py route --task code --prompt "hello"
 python scripts/router.py plan --task code
 python scripts/router.py check
 
+# NVIDIA Build catalog
+./opcode catalog sync-nvidia-build    # Discover + classify Build Free Endpoint models
+./opcode catalog verify-nvidia        # Verify Free Endpoint eligibility -> verified_free
+./opcode models list --provider nvidia --free-only
+./opcode route explain --task coding  # NVIDIA models rank first when eligible
+
 # Quality gate (fail-closed)
 python scripts/quality_gate.py
 
@@ -148,3 +154,17 @@ make ci-all        # lint + type-check + security + tests
 - Table sorting/filtering/pagination, job detail view, CSV/JSON export
 - Dark/light theme, ARIA live regions, focus-visible, keyboard-navigable
 - Custom confirm dialogs, loading states, toasts
+
+### NVIDIA Build Free Endpoint catalog (`scripts/nvidia_build_catalog.py`)
+- Discovers models from `build.nvidia.com` via RSC flight-data parsing with pagination
+- Classifies endpoint types: `Free Endpoint` / `Partner Endpoint` / `Download Available`
+  (kept distinct; only `Free Endpoint` grants free inference eligibility)
+- Free eligibility never inferred from `/v1/models`, model names, `:free` suffixes, or preview status
+- Resolves NIM API model IDs from `.md` detail-page prototype snippets
+- Snapshots preserve provenance, SHA-256, verification timestamps, and change detection
+  (deprecated / removed / unavailable / changed models flagged, never silently promoted)
+- Catalog sync records discovery with `eligibility: unknown` — never silently upgrades
+  to `verified_free`. `opcode catalog verify-nvidia` is the explicit verification step.
+- Capabilities inferred from catalog `general` labels (vision, reasoning, coding,
+  tool_calling, embeddings, architecture, agent_execution, general)
+- Retries, backoff, rate limiting, SSRF URL-scheme validation; API keys never logged

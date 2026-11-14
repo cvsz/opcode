@@ -1,0 +1,1068 @@
+#!/usr/bin/env bash
+# OPCODE — canonical free-first model orchestration CLI
+# Requires: Bash >= 4.4, curl, jq, coreutils, mktemp
+set -Eeuo pipefail
+IFS=$'\n\t'
+umask 077
+
+VERSION="5.1.1"
+APP="opcode"
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
+CONFIG_HOME="${XDG_CONFIG_HOME:-$HOME/.config}/opcode"
+if [[ -n "${OPCODE_ROUTES_DIR:-}" ]]; then
+  ROUTES_DIR="$OPCODE_ROUTES_DIR"
+elif [[ -d "$SCRIPT_DIR/config" ]]; then
+  ROUTES_DIR="$SCRIPT_DIR/config"
+elif [[ -d "$PWD/config" ]]; then
+  ROUTES_DIR="$PWD/config"
+else
+  ROUTES_DIR="$CONFIG_HOME/routes"
+fi
+DATA_HOME="${XDG_DATA_HOME:-$HOME/.local/share}/opcode"
+STATE_HOME="${XDG_STATE_HOME:-$HOME/.local/state}/opcode"
+CONFIG_FILE="${OPCODE_CONFIG:-$CONFIG_HOME/config.env}"
+REGISTRY_FILE="${OPCODE_MODEL_REGISTRY:-$DATA_HOME/models.json}"
+LOCK_FILE="$STATE_HOME/opcode.lock"
+LOG_FILE="$STATE_HOME/opcode.log"
+SOURCE_CATALOG=""
+OPENCODE_BIN="${OPENCODE_BIN:-opencode}"
+
+die() { printf '[%s] ERROR: %s\n' "$APP" "$*" >&2; exit 1; }
+info() { printf '[%s] %s\n' "$APP" "$*"; }
+warn() { printf '[%s] WARNING: %s\n' "$APP" "$*" >&2; }
+have() { command -v "$1" >/dev/null 2>&1; }
+now() { date -u +'%Y-%m-%dT%H:%M:%SZ'; }
+log_event() {
+  mkdir -p "$STATE_HOME"
+  printf '%s level=%s event=%q detail=%q\n' "$(now)" "$1" "$2" "$3" >>"$LOG_FILE"
+}
+need() { have "$1" || die "Missing dependency: $1"; }
+ensure_dirs() { mkdir -p "$CONFIG_HOME" "$DATA_HOME" "$STATE_HOME"; chmod 700 "$CONFIG_HOME" "$DATA_HOME" "$STATE_HOME"; }
+cleanup() { if [[ -n "${TMP_DIR:-}" && -d "${TMP_DIR:-}" ]]; then rm -rf -- "$TMP_DIR"; fi; return 0; }
+trap cleanup EXIT
+on_error() {
+  local rc=$?
+  log_event error unexpected_exit "line=${BASH_LINENO[0]:-unknown} rc=$rc"
+  exit "$rc"
+}
+trap on_error ERR
+
+usage() {
+  cat <<'USAGE'
+OPCODE — free-first model orchestration
+
+Usage:
+  opcode init
+  opcode doctor
+  opcode status
+  opcode catalog import <model-list-file>
+  opcode catalog sync-openrouter
+  opcode catalog sync-nvidia
+  opcode catalog sync-nvidia-build
+  opcode catalog verify-nvidia
+  opcode models list [--free-only] [--provider <provider>]
+  opcode models verify-free
+  opcode models mark-free --id <canonical-id> --evidence <reference>
+  opcode route explain [--task <task>]
+  opcode run [--task <task>] [--model <canonical-id>] -- <prompt>
+  opcode config show
+
+Tasks:
+  general coding code_review architecture reasoning debugging documentation testing
+  security_review agent_execution fast vision
+
+Environment:
+  OPCODE_FREE_ONLY=true|false              default true
+  OPCODE_PAID_FALLBACK=false               default false
+  OPCODE_PROVIDER_ORDER=nvidia,opencode,openrouter,kilo
+  OPCODE_MAX_ATTEMPTS=12
+  OPCODE_MAX_KEYS_PER_PROVIDER=8
+  OPCODE_RETRY_BASE_SECONDS=2
+  OPCODE_MODEL_REGISTRY=/path/to/models.json
+  OPENROUTER_API_KEYS=key1,key2
+  NVIDIA_API_KEY=key                   Direct NVIDIA NIM credential
+  NVIDIA_API_KEYS=key1,key2            Optional credential pool
+  NVIDIA_API_KEY_1..N                 Numbered credential slots
+  NVIDIA_BASE_URL=https://integrate.api.nvidia.com/v1
+  NVIDIA_RPM=35                        Shared request-rate ceiling
+  NVIDIA_TIMEOUT=90
+  NVIDIA_MAX_TOKENS=1024
+  NVIDIA_BUILD_CATALOG_URL=https://build.nvidia.com/models?filters=...
+  NVIDIA_BUILD_SNAPSHOT=state/nvidia-build-snapshot.json
+  OPCODE_ROUTES_DIR=/path/to/routes
+  KILO_API_KEYS=key1,key2
+  OPENCODE_API_KEYS=key1,key2
+
+Security:
+  - Secrets are never written to the registry or logs.
+  - Only models explicitly marked verified_free are eligible in free-only mode.
+  - Agent tasks are not replayed after ambiguous execution failures.
+USAGE
+}
+
+bool() {
+  case "${1,,}" in true|1|yes|on) return 0 ;; false|0|no|off) return 1 ;; *) die "Invalid boolean: $1" ;; esac
+}
+
+load_config() {
+  if [[ -f "$CONFIG_FILE" ]]; then
+    # Config is a trusted, user-owned shell environment file. Keep permissions restrictive.
+    [[ "$(stat -c '%a' "$CONFIG_FILE" 2>/dev/null || stat -f '%Lp' "$CONFIG_FILE")" =~ ^(600|400)$ ]] ||
+      warn "Config permissions should be 600 (run: chmod 600 '$CONFIG_FILE')."
+    set -a
+    # shellcheck disable=SC1090
+    source "$CONFIG_FILE"
+    set +a
+  fi
+  if [[ -n "${OPCODE_ROUTES_DIR:-}" ]]; then ROUTES_DIR="$OPCODE_ROUTES_DIR"; fi
+  : "${OPCODE_FREE_ONLY:=true}"
+  : "${OPCODE_PAID_FALLBACK:=false}"
+  : "${OPCODE_PROVIDER_ORDER:=nvidia,opencode,openrouter,kilo}"
+  : "${OPCODE_MAX_ATTEMPTS:=12}"
+  : "${OPCODE_MAX_KEYS_PER_PROVIDER:=8}"
+  : "${OPCODE_RETRY_BASE_SECONDS:=2}"
+  : "${OPCODE_TASK_DEFAULT:=general}"
+  : "${NVIDIA_BASE_URL:=https://integrate.api.nvidia.com/v1}"
+  : "${NVIDIA_RPM:=35}"
+  : "${NVIDIA_TIMEOUT:=90}"
+  : "${NVIDIA_MAX_TOKENS:=1024}"
+  : "${NVIDIA_COOLDOWN_429:=30}"
+  : "${NVIDIA_COOLDOWN_ERR:=120}"
+  : "${OPCODE_MODEL_REGISTRY:=$REGISTRY_FILE}"
+  REGISTRY_FILE="$OPCODE_MODEL_REGISTRY"
+  [[ "$OPCODE_MAX_ATTEMPTS" =~ ^[1-9][0-9]*$ ]] || die "OPCODE_MAX_ATTEMPTS must be a positive integer"
+  [[ "$OPCODE_MAX_KEYS_PER_PROVIDER" =~ ^[1-9][0-9]*$ ]] || die "OPCODE_MAX_KEYS_PER_PROVIDER must be a positive integer"
+  [[ "$OPCODE_RETRY_BASE_SECONDS" =~ ^[0-9]+$ ]] || die "OPCODE_RETRY_BASE_SECONDS must be a non-negative integer"
+}
+
+init_registry() {
+  ensure_dirs
+  mkdir -p "$(dirname "$REGISTRY_FILE")"
+  if [[ ! -f "$REGISTRY_FILE" ]]; then
+    printf '{"schema_version":1,"updated_at":"%s","models":[]}\n' "$(now)" >"$REGISTRY_FILE"
+    chmod 600 "$REGISTRY_FILE"
+  fi
+  jq -e '.schema_version == 1 and (.models | type == "array")' "$REGISTRY_FILE" >/dev/null ||
+    die "Registry schema is invalid: $REGISTRY_FILE"
+}
+
+atomic_registry() {
+  local candidate="$1"
+  jq -e '.schema_version == 1 and (.models | type == "array")' "$candidate" >/dev/null ||
+    die "Refusing to publish invalid registry"
+  local tmp
+  tmp="$(mktemp "${REGISTRY_FILE}.XXXXXX")"
+  jq --arg updated "$(now)" '.updated_at=$updated' "$candidate" >"$tmp"
+  chmod 600 "$tmp"
+  mv -f -- "$tmp" "$REGISTRY_FILE"
+}
+
+provider_of() { printf '%s' "${1%%/*}"; }
+native_id_of() { printf '%s' "${1#*/}"; }
+key_env_for() {
+  case "$1" in
+    openrouter) printf 'OPENROUTER_API_KEYS' ;;
+    nvidia|console-nvidia) printf 'NVIDIA_API_KEYS' ;;
+    kilo) printf 'KILO_API_KEYS' ;;
+    opencode) printf 'OPENCODE_API_KEYS' ;;
+    *) printf '' ;;
+  esac
+}
+env_var_for() {
+  case "$1" in
+    openrouter) printf 'OPENROUTER_API_KEY' ;;
+    nvidia|console-nvidia) printf 'NVIDIA_API_KEY' ;;
+    kilo) printf 'KILO_API_KEY' ;;
+    opencode) printf 'OPENCODE_API_KEY' ;;
+    *) printf '' ;;
+  esac
+}
+csv_items() {
+  local value="$1"
+  local item
+  IFS=',' read -r -a _items <<<"$value"
+  for item in "${_items[@]}"; do
+    item="${item#"${item%%[![:space:]]*}"}"
+    item="${item%"${item##*[![:space:]]}"}"
+    [[ -n "$item" ]] && printf '%s\n' "$item"
+  done
+}
+provider_keys() {
+  local provider="$1" key_var single_var slot_prefix value slot_name slot_value i
+  key_var="$(key_env_for "$provider")"
+  single_var="$(env_var_for "$provider")"
+  case "$provider" in
+    openrouter) slot_prefix="OPENROUTER_API_KEY_" ;;
+    nvidia|console-nvidia) slot_prefix="NVIDIA_API_KEY_" ;;
+    kilo) slot_prefix="KILO_API_KEY_" ;;
+    opencode) slot_prefix="OPENCODE_API_KEY_" ;;
+    *) slot_prefix="" ;;
+  esac
+  [[ -n "$key_var" || -n "$single_var" || -n "$slot_prefix" ]] || return 0
+  value="${!key_var:-}"
+  {
+    [[ -n "$value" ]] && csv_items "$value"
+    if [[ -n "$slot_prefix" ]]; then
+      for ((i=1; i<=OPCODE_MAX_KEYS_PER_PROVIDER; i++)); do
+        slot_name="${slot_prefix}${i}"
+        slot_value="${!slot_name:-}"
+        [[ -n "$slot_value" ]] && printf '%s\n' "$slot_value"
+      done
+    fi
+    if [[ -n "$single_var" ]]; then
+      slot_value="${!single_var:-}"
+      [[ -n "$slot_value" ]] && printf '%s\n' "$slot_value"
+    fi
+  } | awk -v max="$OPCODE_MAX_KEYS_PER_PROVIDER" '!seen[$0]++ { print; if (++count >= max) exit }'
+}
+provider_order() { csv_items "$OPCODE_PROVIDER_ORDER"; }
+
+cmd_init() {
+  ensure_dirs
+  if [[ ! -f "$CONFIG_FILE" ]]; then
+    cat >"$CONFIG_FILE" <<'CONF'
+# OPCODE canonical configuration. Protect this file with chmod 600.
+OPCODE_FREE_ONLY=true
+OPCODE_PAID_FALLBACK=false
+OPCODE_PROVIDER_ORDER=nvidia,opencode,openrouter,kilo
+OPCODE_MAX_ATTEMPTS=12
+OPCODE_MAX_KEYS_PER_PROVIDER=8
+OPCODE_RETRY_BASE_SECONDS=2
+# Add credentials only for providers you have explicitly configured.
+# OPENROUTER_API_KEYS=
+# NVIDIA_API_KEY= or NVIDIA_API_KEYS= (comma-separated credential pool)
+# Alternatively use NVIDIA_API_KEY_1 through NVIDIA_API_KEY_8.
+NVIDIA_BASE_URL=https://integrate.api.nvidia.com/v1
+NVIDIA_RPM=35
+NVIDIA_TIMEOUT=90
+NVIDIA_MAX_TOKENS=1024
+# KILO_API_KEYS=
+# OPENCODE_API_KEYS=
+CONF
+    chmod 600 "$CONFIG_FILE"
+  fi
+  init_registry
+  info "Initialized."
+  info "Config:   $CONFIG_FILE"
+  info "Registry: $REGISTRY_FILE"
+  info "Edit the config and add provider credentials using your secret-management policy."
+}
+
+cmd_doctor() {
+  local failed=0 dep
+  for dep in bash curl jq awk sed grep mktemp flock; do
+    if have "$dep"; then printf 'OK   %s\n' "$dep"; else printf 'MISS %s\n' "$dep"; failed=1; fi
+  done
+  if have "$OPENCODE_BIN"; then
+    printf 'OK   %s (%s)\n' "$OPENCODE_BIN" "$("$OPENCODE_BIN" --version 2>/dev/null | head -n1 || true)"
+  else
+    printf 'MISS OpenCode runtime (%s)\n' "$OPENCODE_BIN"; failed=1
+  fi
+  printf 'Config: %s\nRegistry: %s\n' "$CONFIG_FILE" "$REGISTRY_FILE"
+  [[ -f "$REGISTRY_FILE" ]] && jq -e '.schema_version == 1' "$REGISTRY_FILE" >/dev/null &&
+    printf 'OK   registry schema\n' || { printf 'MISS registry/schema\n'; failed=1; }
+  return "$failed"
+}
+
+cmd_status() {
+  init_registry
+  jq -r '
+    "Registry updated: \(.updated_at)",
+    "Total models: \(.models|length)",
+    "Verified free: \([.models[]|select(.eligibility=="verified_free" and .enabled!=false)]|length)",
+    "Unverified: \([.models[]|select(.eligibility=="free_unverified" or .eligibility=="unknown")]|length)",
+    "Paid: \([.models[]|select(.eligibility=="paid")]|length)",
+    "Disabled: \([.models[]|select(.enabled==false)]|length)"
+  ' "$REGISTRY_FILE"
+  printf '\nProvider credentials:\n'
+  local p kv count
+  while IFS= read -r p; do
+    kv="$(key_env_for "$p")"
+    [[ -n "$kv" ]] || continue
+    count="$(provider_keys "$p" | wc -l | tr -d ' ')"
+    printf '  %-16s %s key(s) configured\n' "$p" "$count"
+  done < <(provider_order)
+}
+
+catalog_import() {
+  local source="$1"
+  [[ -f "$source" && -r "$source" ]] || die "Cannot read catalog: $source"
+  local tmp
+  tmp="$(mktemp)"
+  # Input is one provider/model identifier per line; JSON input is deliberately not guessed.
+  jq -Rn '[inputs | gsub("\\r";"") | select(length>0) | select(startswith("#")|not) | select(contains("/")) | {
+    id: ., provider: (split("/")[0]), native_id: (.[(index("/")+1):]),
+    eligibility:"unknown", enabled:true, capabilities:[], source:"imported-catalog",
+    pricing:null, evidence:null, last_verified_at:null
+  }] | unique_by(.id)' "$source" >"$tmp"
+  jq -e 'type=="array"' "$tmp" >/dev/null || die "Catalog parsing failed"
+  local merged
+  merged="$(mktemp)"
+  jq --slurpfile incoming "$tmp" '
+    . as $old |
+    ($old.models + $incoming[0]) |
+    group_by(.id) |
+    map(.[-1] + (.[0] | {eligibility,pricing,evidence,last_verified_at} | with_entries(select(.value != null)))) as $models |
+    {schema_version:1,updated_at:$old.updated_at,models:$models}
+  ' "$REGISTRY_FILE" >"$merged"
+  atomic_registry "$merged"
+  info "Imported $(jq 'length' "$tmp") catalog entries."
+  rm -f "$tmp" "$merged"
+}
+
+write_nvidia_auth_header() {
+  local api_key="$1" header_file="$2"
+  [[ -n "$api_key" && "$api_key" != *$'\n'* && "$api_key" != *$'\r'* ]] ||
+    die "NVIDIA API key is empty or contains an invalid newline."
+  printf 'Authorization: Bearer %s\n' "$api_key" >"$header_file"
+  chmod 600 "$header_file"
+}
+
+sync_nvidia() {
+  need curl; need jq; init_registry
+  local tmp merged base api_key status curl_rc found=0 key_index=0 auth_file
+  local _nvidia_keys=()
+  mapfile -t _nvidia_keys < <(provider_keys nvidia)
+  ((${#_nvidia_keys[@]})) || die "NVIDIA API key missing. Set NVIDIA_API_KEY, NVIDIA_API_KEYS, or NVIDIA_API_KEY_1..N in the protected OPCODE config."
+
+  TMP_DIR="$(mktemp -d)"
+  tmp="$TMP_DIR/nvidia-models.json"; merged="$TMP_DIR/registry.json"; auth_file="$TMP_DIR/nvidia-auth.headers"
+  base="$(nvidia_base_url)"
+  info "Fetching NVIDIA API model inventory..."
+  # Do not follow redirects: a bearer token must never be forwarded to another host.
+  for api_key in "${_nvidia_keys[@]}"; do
+    write_nvidia_auth_header "$api_key" "$auth_file"
+    nvidia_rate_limit
+    if status="$(curl --silent --show-error --connect-timeout 10 --max-time 60 \
+        -H @"$auth_file" \
+        -H 'Accept: application/json' \
+        -o "$tmp" -w '%{http_code}' "$base/models")"; then
+      curl_rc=0
+    else
+      curl_rc=$?
+    fi
+    if ((curl_rc == 0)) && [[ "$status" == "200" ]]; then
+      found=1
+      break
+    fi
+    if [[ "$status" == "401" || "$status" == "403" ]]; then
+      warn "NVIDIA credential slot $((key_index+1)) rejected; trying the next configured key."
+      ((key_index+=1))
+      continue
+    fi
+    rm -f "$tmp" "$merged"
+    die "NVIDIA model inventory request failed (curl=$curl_rc HTTP=${status:-unknown}); existing registry was preserved."
+  done
+  if ((found == 0)); then
+    rm -f "$tmp" "$merged"
+    die "All configured NVIDIA credentials were rejected; existing registry was preserved."
+  fi
+  jq -e '.data | type=="array"' "$tmp" >/dev/null || {
+    rm -f "$tmp" "$merged"; die "NVIDIA returned an unexpected model inventory schema."
+  }
+  jq -e 'all(.data[]; (.id|type)=="string" and (.id|test("^[^/]+/[^/]+$")))' "$tmp" >/dev/null || {
+    rm -f "$tmp" "$merged"; die "NVIDIA inventory contains an invalid model ID; expected publisher/model."
+  }
+  jq --slurpfile remote "$tmp" '
+    . as $old |
+    # Catalog identity always carries :free; runtime identity never does.
+    # NVIDIA native IDs must be exactly <publisher>/<model>.
+    ([ $old.models[] | if .provider=="nvidia" or (.id|startswith("nvidia/")) then
+        . as $m |
+        ($m.id | sub("^nvidia/";"") | sub(":free$";"")) as $native |
+        if ($native|test("^[^/]+/[^/]+$") and ($native|contains(":" )|not)) then
+          $m + {id:("nvidia/"+$native+":free"),provider:"nvidia",native_id:$native}
+        else $m end
+      else . end ]) as $existing |
+    ($existing + [
+      $remote[0].data[] | . as $m | ($m.id | sub(":free$";"")) as $native |
+      {
+        id:("nvidia/"+$native+":free"),
+        provider:"nvidia",
+        native_id:$native,
+        eligibility:"unknown",
+        enabled:true,
+        capabilities:[],
+        pricing:null,
+        context_length:($m.context_length // $m.max_model_len // null),
+        source:"nvidia-api-models",
+        evidence:"NVIDIA API inventory discovery; :free is a routing/catalog suffix, not proof of free pricing or entitlement",
+        last_verified_at:(now|todate)
+      }
+    ]) |
+    group_by(.id) |
+    map(.[-1] + (.[0] | {eligibility,pricing,evidence,last_verified_at,enabled,capabilities,context_length} | with_entries(select(.value != null)))) as $models |
+    {schema_version:1,updated_at:$old.updated_at,models:$models}
+  ' "$REGISTRY_FILE" >"$merged"
+  atomic_registry "$merged"
+  local count
+  count="$(jq '[.data[] | select(.id|test("^[^/]+/[^/]+$"))] | length' "$tmp")"
+  rm -f "$tmp" "$merged"
+  info "NVIDIA catalog synchronized: $count model IDs discovered."
+  warn "The :free suffix is a catalog/routing label only. NVIDIA /v1/models does not establish free-tier eligibility; models remain unknown and are excluded by free-only routing until independently verified."
+}
+
+# NVIDIA Build Free Endpoint catalog sync.
+# Discovers models from build.nvidia.com, classifies endpoint types
+# (Free Endpoint / Partner Endpoint / Download Available), and merges them
+# into the registry with eligibility "unknown". Never silently upgrades
+# unknown models to verified_free — that is a separate verify step.
+sync_nvidia_build() {
+  need python3; need jq; init_registry
+  local tmp snapshot merged
+  local _nvidia_keys=()
+  mapfile -t _nvidia_keys < <(provider_keys nvidia)
+  ((${#_nvidia_keys[@]})) || die "NVIDIA API key missing. Set NVIDIA_API_KEY, NVIDIA_API_KEYS, or NVIDIA_API_KEY_1..N in the protected OPCODE config."
+
+  TMP_DIR="$(mktemp -d)"
+  tmp="$TMP_DIR/build-snapshot.json"
+  snapshot="$TMP_DIR/build-snapshot.json"
+  merged="$TMP_DIR/registry.json"
+
+  info "Discovering NVIDIA Build Free Endpoint catalog..."
+  PYTHONPATH="scripts" python3 - "$tmp" <<'PYEOF'
+import json
+import sys
+from nvidia_build_catalog import discover_catalog, save_snapshot
+from pathlib import Path
+
+snapshot = discover_catalog()
+save_snapshot(snapshot, Path(sys.argv[1]))
+sys.stderr.write(
+    f"build-discovery models={snapshot.model_count} "
+    f"free={snapshot.free_endpoint_count} "
+    f"partner={snapshot.partner_endpoint_count} "
+    f"downloadable={snapshot.downloadable_count} "
+    f"pages={snapshot.page_count}\n"
+)
+PYEOF
+  local build_rc=$?
+  if (( build_rc != 0 )); then
+    rm -f "$tmp" "$merged"
+    die "NVIDIA Build catalog discovery failed; existing registry was preserved."
+  fi
+
+  # Merge Build-discovered models into the registry.
+  # Free Endpoint models are recorded with eligibility "unknown" + evidence;
+  # Partner / Downloadable models are recorded but excluded from free routing.
+  # Existing verified_free eligibility is preserved (never downgraded or silently
+  # upgraded by sync).
+  jq --slurpfile build "$tmp" '
+    . as $old |
+    ($old.models + $build[0].models) |
+    group_by(.id) |
+    map(
+      . as $group |
+      (if ($group | map(select(.eligibility=="verified_free")) | length) > 0
+        then "verified_free" else "unknown" end) as $elig |
+      $group[-1] + {
+        eligibility: $elig,
+        enabled: true,
+        source: "nvidia-build",
+        evidence: ("NVIDIA Build catalog; endpoint types: " +
+                   ($group[-1].endpoint_types // [] | join(", ")) +
+                   "; Free Endpoint: " +
+                   (if ($group[-1].is_free_endpoint // false) then "eligible" else "not eligible" end)),
+        last_verified_at: null
+      }
+    ) as $models |
+    {schema_version:1, updated_at:$old.updated_at, models:$models}
+  ' "$REGISTRY_FILE" >"$merged"
+  atomic_registry "$merged"
+  rm -f "$tmp" "$merged"
+
+  local free_count unknown_count
+  free_count="$(jq '[.models[] | select(.provider=="nvidia" and .eligibility=="verified_free")] | length' "$REGISTRY_FILE")"
+  unknown_count="$(jq '[.models[] | select(.provider=="nvidia" and .eligibility=="unknown")] | length' "$REGISTRY_FILE")"
+  info "NVIDIA Build catalog synchronized: $unknown_count unknown, $free_count verified-free NVIDIA models."
+  warn "Only verified_free NVIDIA models enter free-only routing. Run 'opcode catalog verify-nvidia' to confirm Free Endpoint eligibility explicitly."
+}
+
+# Explicit verification of NVIDIA Free Endpoint eligibility.
+# Marks NVIDIA registry models that carry Free Endpoint evidence as verified_free
+# with a verification timestamp. This is the only path (besides manual mark-free)
+# that grants NVIDIA free routing eligibility.
+verify_nvidia() {
+  need jq; init_registry
+  local tmp merged now_verified count=0
+  now_verified="$(now)"
+
+  TMP_DIR="$(mktemp -d)"
+  tmp="$TMP_DIR/registry.json"
+  merged="$TMP_DIR/registry.json"
+
+  jq --arg verified "$now_verified" '
+    . as $old |
+    ($old.models | map(
+      if .provider == "nvidia" and .eligibility == "unknown"
+         and ((.evidence // "") | test("Free Endpoint: eligible"; "i")) then
+        . + {eligibility:"verified_free", last_verified_at:$verified}
+      else . end
+    )) as $models |
+    {schema_version:1, updated_at:$old.updated_at, models:$models}
+  ' "$REGISTRY_FILE" >"$merged"
+  atomic_registry "$merged"
+  rm -f "$tmp" "$merged"
+
+  count="$(jq '[.models[] | select(.provider=="nvidia" and .eligibility=="verified_free")] | length' "$REGISTRY_FILE")"
+  info "NVIDIA verification complete: $count verified-free NVIDIA model(s)."
+}
+
+sync_openrouter() {
+  need curl; need jq; init_registry
+  local tmp merged
+  tmp="$(mktemp)"; merged="$(mktemp)"
+  info "Fetching OpenRouter public model catalog..."
+  if ! curl --fail --silent --show-error --location --max-redirs 3 \
+      --connect-timeout 10 --max-time 60 \
+      -H 'Accept: application/json' \
+      https://openrouter.ai/api/v1/models -o "$tmp"; then
+    rm -f "$tmp" "$merged"
+    die "OpenRouter catalog request failed; existing registry was preserved."
+  fi
+  jq -e '.data | type=="array"' "$tmp" >/dev/null || {
+    rm -f "$tmp" "$merged"; die "OpenRouter returned an unexpected schema."
+  }
+  jq --slurpfile remote "$tmp" '
+    . as $old |
+    ($old.models + [
+      $remote[0].data[] |
+      . as $m |
+      {
+        id:("openrouter/"+$m.id),
+        provider:"openrouter",
+        native_id:$m.id,
+        eligibility:(if (($m.pricing.prompt // "unknown")|tonumber? == 0)
+                       and (($m.pricing.completion // "unknown")|tonumber? == 0)
+                       and (($m.pricing.request // "0")|tonumber? == 0)
+                       and (($m.pricing.image // "0")|tonumber? == 0)
+                     then "verified_free" else "unknown" end),
+        enabled:true,
+        capabilities:(
+          [if (($m.architecture.input_modalities // [])|index("image")) then "vision" else empty end] +
+          [if (($m.supported_parameters // [])|index("tools")) then "tools" else empty end] +
+          [if (($m.supported_parameters // [])|index("response_format")) then "structured_output" else empty end]
+        ),
+        pricing:{
+          prompt:($m.pricing.prompt // null),
+          completion:($m.pricing.completion // null),
+          currency:"USD",
+          source:"OpenRouter public catalog"
+        },
+        context_length:($m.context_length // null),
+        source:"openrouter-api",
+        evidence:"OpenRouter model catalog reports zero prompt and completion price",
+        last_verified_at:(now|todate)
+      }
+    ]) |
+    group_by(.id) |
+    map(.[-1] + (.[0] | {enabled} | with_entries(select(.value != null)))) as $models |
+    {schema_version:1,updated_at:$old.updated_at,models:$models}
+  ' "$REGISTRY_FILE" >"$merged"
+  atomic_registry "$merged"
+  rm -f "$tmp" "$merged"
+  info "OpenRouter catalog synchronized. Zero-priced entries were marked from the returned pricing fields."
+  warn "A zero price in a public catalog does not guarantee account eligibility, quota, or current endpoint availability."
+}
+
+models_list() {
+  local free_only=false provider=""
+  while (($#)); do
+    case "$1" in
+      --free-only) free_only=true; shift ;;
+      --provider)
+        [[ -n "${2:-}" ]] || die "--provider requires a provider name"
+        provider="$2"; shift 2 ;;
+      *) die "Unknown models list option: $1" ;;
+    esac
+  done
+  if $free_only; then
+    jq -r --arg provider "$provider" '.models
+      | map(select(.eligibility=="verified_free" and .enabled!=false))
+      | map(select(($provider=="") or .provider==$provider))
+      | sort_by((if (.provider=="nvidia" and (.id|test("^nvidia/[^/]+/[^/:]+:free$"))) then 0 else 1 end), .id)
+      | .[] | [.id,.provider,.eligibility,(.context_length//"")] | @tsv' "$REGISTRY_FILE"
+  else
+    jq -r --arg provider "$provider" '.models
+      | map(select(.enabled!=false))
+      | map(select(($provider=="") or .provider==$provider))
+      | sort_by((if (.provider=="nvidia" and (.id|test("^nvidia/[^/]+/[^/:]+:free$"))) then 0 else 1 end), .id)
+      | .[] | [.id,.provider,.eligibility,(.context_length//"")] | @tsv' "$REGISTRY_FILE"
+  fi
+}
+
+mark_free() {
+  local id="" evidence=""
+  while (($#)); do
+    case "$1" in
+      --id) id="${2:-}"; shift 2 ;;
+      --evidence) evidence="${2:-}"; shift 2 ;;
+      *) die "Unknown mark-free option: $1" ;;
+    esac
+  done
+  [[ -n "$id" && -n "$evidence" ]] || die "Usage: models mark-free --id <id> --evidence <provider-policy-or-url>"
+  local tmp
+  tmp="$(mktemp)"
+  jq --arg id "$id" --arg evidence "$evidence" --arg verified "$(now)" '
+    if ([.models[].id] | index($id)) == null then error("model not found") else
+      .models |= map(if .id==$id then .eligibility="verified_free" |
+        .evidence=$evidence | .last_verified_at=$verified else . end)
+    end
+  ' "$REGISTRY_FILE" >"$tmp" || { rm -f "$tmp"; die "Could not update model eligibility"; }
+  atomic_registry "$tmp"; rm -f "$tmp"
+  warn "Eligibility was manually attested. Keep the evidence current and revalidate provider terms."
+}
+
+verify_free() {
+  jq -r '.models[] | select(.eligibility=="verified_free") |
+    [.id,.provider,(.pricing.prompt//"manual"),(.pricing.completion//"manual"),(.evidence//"missing"),(.last_verified_at//"never")] | @tsv' "$REGISTRY_FILE"
+}
+
+task_filter() {
+  case "$1" in
+    general|fast|vision) printf '%s' "$1" ;;
+    coding|code_review|architecture|reasoning|debugging|documentation|testing|security_review|agent_execution) printf '%s' "$1" ;;
+    *) die "Unsupported task type: $1" ;;
+  esac
+}
+
+task_route_file() {
+  case "$1" in
+    general|reasoning|documentation) printf '%s/general.txt' "$ROUTES_DIR" ;;
+    coding|architecture|debugging|testing) printf '%s/code.txt' "$ROUTES_DIR" ;;
+    code_review|security_review) printf '%s/review.txt' "$ROUTES_DIR" ;;
+    fast) printf '%s/fast.txt' "$ROUTES_DIR" ;;
+    vision) printf '%s/vision.txt' "$ROUTES_DIR" ;;
+    agent_execution) printf '%s/agent_execution.txt' "$ROUTES_DIR" ;;
+    *) return 1 ;;
+  esac
+}
+
+nvidia_model_allowlisted() {
+  local model="$1" allowlist="$ROUTES_DIR/nvidia-free-models.txt"
+  [[ -f "$allowlist" ]] || return 1
+  grep -Fqx -- "$model" "$allowlist"
+}
+
+task_route_ids() {
+  local task="$1" file line
+  file="$(task_route_file "$task" 2>/dev/null || true)"
+  [[ -n "$file" && -r "$file" ]] || return 0
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    line="${line%%#*}"
+    line="${line#"${line%%[![:space:]]*}"}"
+    line="${line%"${line##*[![:space:]]}"}"
+    [[ -n "$line" ]] || continue
+    # NVIDIA task lists may use the runtime namespace; catalog identity always has :free.
+    if [[ "$line" == nvidia/* ]]; then
+      [[ "$line" == *:free ]] || line="${line}:free"
+      nvidia_model_allowlisted "$line" || continue
+    fi
+    printf '%s\n' "$line"
+  done <"$file"
+}
+
+nvidia_base_url() {
+  local base="${NVIDIA_BASE_URL%/}"
+  [[ "$base" != *$'\n'* && "$base" != *$'\r'* && "$base" != *'@'* && "$base" != *'?'* && "$base" != *'#'* ]] || die "Invalid NVIDIA_BASE_URL."
+  case "$base" in
+    https://*) ;;
+    http://127.0.0.1:*|http://localhost:*|http://[::1]:*) ;;
+    *) die "NVIDIA_BASE_URL must use HTTPS (HTTP is allowed only for loopback tests)." ;;
+  esac
+  printf '%s' "$base"
+}
+
+nvidia_rate_limit() {
+  local rpm="${NVIDIA_RPM:-35}" now_ms last_ms interval_ms wait_ms
+  [[ "$rpm" =~ ^[1-9][0-9]*$ ]] || die "NVIDIA_RPM must be a positive integer."
+  now_ms="$(date +%s%3N)"
+  [[ "$now_ms" =~ ^[0-9]+$ ]] || now_ms="$(( $(date +%s) * 1000 ))"
+  last_ms="$(cat "$STATE_HOME/nvidia-last-request-ms" 2>/dev/null || printf '0')"
+  [[ "$last_ms" =~ ^[0-9]+$ ]] || last_ms=0
+  interval_ms=$(( (60000 + rpm - 1) / rpm ))
+  wait_ms=$(( interval_ms - (now_ms - last_ms) ))
+  if (( wait_ms > 0 )); then
+    sleep "$(awk -v ms="$wait_ms" 'BEGIN { printf "%.3f", ms / 1000 }')"
+  fi
+  now_ms="$(date +%s%3N)"
+  [[ "$now_ms" =~ ^[0-9]+$ ]] || now_ms="$(( $(date +%s) * 1000 ))"
+  printf '%s\n' "$now_ms" >"$STATE_HOME/nvidia-last-request-ms"
+  chmod 600 "$STATE_HOME/nvidia-last-request-ms"
+}
+
+nvidia_model_is_benched() {
+  local model="$1" now_epoch
+  local path="$STATE_HOME/nvidia-cooldowns.json"
+  [[ -f "$path" ]] || return 1
+  now_epoch="$(date +%s)"
+  jq -e --arg id "$model" --argjson now "$now_epoch" \
+    '((.[$id] // 0) | tonumber? // 0) > $now' "$path" >/dev/null 2>&1
+}
+
+nvidia_model_bench() {
+  local model="$1" seconds="$2" path="$STATE_HOME/nvidia-cooldowns.json"
+  local until tmp
+  [[ "$seconds" =~ ^[0-9]+$ ]] || return 1
+  until=$(( $(date +%s) + seconds ))
+  tmp="$(mktemp "${path}.XXXXXX")"
+  if [[ -f "$path" ]] && jq --arg id "$model" --argjson until "$until" \
+      '(. // {}) | .[$id]=$until' "$path" >"$tmp" 2>/dev/null; then
+    :
+  else
+    jq -n --arg id "$model" --argjson until "$until" '{($id):$until}' >"$tmp"
+  fi
+  chmod 600 "$tmp"
+  mv -f -- "$tmp" "$path"
+}
+
+# NVIDIA Direct NIM adapter. Registry ID: nvidia/<publisher>/<model>:free
+# OPCODE runtime ID: nvidia/<publisher>/<model>
+# NVIDIA API payload ID: <publisher>/<model>
+# This adapter is inference-only; it does not provide OpenCode tools or filesystem access.
+nvidia_chat_completion() {
+  local api_key="$1" runtime_id="$2" prompt="$3" output_file="$4"
+  local native_id="${runtime_id#nvidia/}" base max_tokens timeout request_file response_file err_file
+  local http_status curl_rc message answer auth_file
+  [[ -n "$api_key" ]] || { printf 'NVIDIA API credential is missing.\n' >"$output_file"; return 10; }
+  [[ "$runtime_id" =~ ^nvidia/[^/]+/[^/:]+$ ]] || {
+    printf 'Invalid NVIDIA runtime model ID.\n' >"$output_file"; return 20;
+  }
+  [[ "$native_id" =~ ^[^/]+/[^/:]+$ ]] || {
+    printf 'Invalid NVIDIA native model ID.\n' >"$output_file"; return 20;
+  }
+  max_tokens="${NVIDIA_MAX_TOKENS:-1024}"
+  timeout="${NVIDIA_TIMEOUT:-90}"
+  [[ "$max_tokens" =~ ^[1-9][0-9]*$ ]] && (( max_tokens <= 65536 )) || {
+    printf 'NVIDIA_MAX_TOKENS must be between 1 and 65536.\n' >"$output_file"; return 70;
+  }
+  [[ "$timeout" =~ ^[1-9][0-9]*$ ]] || {
+    printf 'NVIDIA_TIMEOUT must be a positive integer.\n' >"$output_file"; return 70;
+  }
+  base="$(nvidia_base_url)"
+  request_file="$TMP_DIR/nvidia-request.json"
+  response_file="$TMP_DIR/nvidia-response.json"
+  err_file="$TMP_DIR/nvidia-curl.err"
+  auth_file="$TMP_DIR/nvidia-auth.headers"
+  write_nvidia_auth_header "$api_key" "$auth_file"
+  jq -n --arg model "$native_id" --arg prompt "$prompt" --argjson max_tokens "$max_tokens" \
+    '{model:$model,messages:[{role:"user",content:$prompt}],max_tokens:$max_tokens}' >"$request_file"
+  nvidia_rate_limit
+
+  if http_status="$(curl --silent --show-error --connect-timeout 10 --max-time "$timeout" \
+      -H @"$auth_file" \
+      -H 'Accept: application/json' \
+      -H 'Content-Type: application/json' \
+      --data-binary @"$request_file" \
+      -o "$response_file" -w '%{http_code}' \
+      "$base/chat/completions" 2>"$err_file")"; then
+    curl_rc=0
+  else
+    curl_rc=$?
+  fi
+
+  if (( curl_rc != 0 )); then
+    if (( curl_rc == 28 )); then
+      printf 'NVIDIA request timed out; no automatic replay was attempted.\n' >"$output_file"
+    else
+      printf 'NVIDIA transport failure (curl exit %s); no automatic replay was attempted.\n' "$curl_rc" >"$output_file"
+    fi
+    return 70
+  fi
+
+  if [[ "$http_status" != "200" ]]; then
+    message="$(jq -r '.error.message // .detail // .message // empty' "$response_file" 2>/dev/null || true)"
+    [[ -n "$message" ]] || message="NVIDIA API returned HTTP ${http_status:-unknown}"
+    # Never echo a credential even if a provider error body unexpectedly reflects it.
+    message="${message//"$api_key"/[REDACTED]}"
+    printf 'HTTP %s: %s\n' "${http_status:-unknown}" "${message:0:500}" >"$output_file"
+    case "$http_status" in
+      401|403) return 10 ;;
+      400|404|422) return 20 ;;
+      402|429) return 30 ;;
+      *) return 70 ;;
+    esac
+  fi
+
+  if ! jq -e '.choices | type=="array" and length>0' "$response_file" >/dev/null 2>&1; then
+    printf 'NVIDIA returned an invalid chat-completion response.\n' >"$output_file"
+    return 70
+  fi
+  answer="$(jq -r '
+    .choices[0].message.content as $content |
+    if ($content|type)=="string" then $content
+    elif ($content|type)=="array" then
+      [$content[] | select(.type=="text") | (.text // "")] | join("")
+    else "" end
+  ' "$response_file")"
+  [[ -n "$answer" ]] || {
+    printf 'NVIDIA response contained no text content.\n' >"$output_file"
+    return 70
+  }
+  printf '%s' "$answer" >"$output_file"
+  return 0
+}
+
+ranked_models() {
+  local task="$1" explicit="${2:-}"
+  if [[ -n "$explicit" ]]; then
+    # Accept canonical catalog ID or runtime namespace ID without :free.
+    local nvidia_allowlist='[]'
+    if [[ -f "$ROUTES_DIR/nvidia-free-models.txt" ]]; then
+      nvidia_allowlist="$(awk 'NF && $1 !~ /^#/ {print $1}' "$ROUTES_DIR/nvidia-free-models.txt" | jq -Rsc 'split("\n")|map(select(length>0))')"
+    fi
+    jq -r --arg id "$explicit" --argjson allowlist "$nvidia_allowlist" \
+      --argjson free "$( [[ "${OPCODE_FREE_ONLY,,}" == true ]] && echo true || echo false )" '
+      .models[] |
+      select((.id==$id) or ((.provider=="nvidia") and (.id==($id+":free")))) |
+      select(.enabled!=false) |
+      select(. as $candidate | ($candidate.provider!="nvidia") or (($allowlist|index($candidate.id)) != null)) |
+      select(($free|not) or .eligibility=="verified_free") | .id
+    ' "$REGISTRY_FILE"
+    return
+  fi
+  local providers task_ids nvidia_allowlist
+  providers="$(printf '%s\n' "$(provider_order)" | jq -Rsc 'split("\n")|map(select(length>0))')"
+  task_ids="$(task_route_ids "$task" | jq -Rsc 'split("\n")|map(select(length>0))')"
+  nvidia_allowlist='[]'
+  if [[ -f "$ROUTES_DIR/nvidia-free-models.txt" ]]; then
+    nvidia_allowlist="$(awk 'NF && $1 !~ /^#/ {print $1}' "$ROUTES_DIR/nvidia-free-models.txt" | jq -Rsc 'split("\n")|map(select(length>0))')"
+  fi
+  jq -r --argjson providers "$providers" --argjson task_ids "$task_ids" --argjson allowlist "$nvidia_allowlist" \
+    --argjson free "$( [[ "${OPCODE_FREE_ONLY,,}" == true ]] && echo true || echo false )" '
+    .models
+    | map(select(.enabled!=false))
+    | map(select(($free|not) or .eligibility=="verified_free"))
+    | map(. as $candidate | select($candidate.provider!="nvidia" or (($allowlist|index($candidate.id)) != null)))
+    | map(. as $candidate | select(($task_ids|length)==0 or (($task_ids|index($candidate.id)) != null)))
+    | map(. as $model | $model + {
+        direct_nvidia_rank: (if ($model.provider=="nvidia" and ($model.id|test("^nvidia/[^/]+/[^/:]+:free$"))) then 0 else 1 end),
+        nvidia_publisher_rank: (if ($model.provider=="nvidia" and ($model.id|startswith("nvidia/nvidia/"))) then 0 else 1 end),
+        provider_rank: (($providers | index($model.provider)) // 999),
+        task_rank: (($task_ids | index($model.id)) // 999999)
+      })
+    | sort_by(.direct_nvidia_rank, .nvidia_publisher_rank, .provider_rank, .task_rank, ((.capabilities|length)*-1), .id)
+    | .[].id
+  ' "$REGISTRY_FILE"
+}
+
+route_explain() {
+  local task="${1:-$OPCODE_TASK_DEFAULT}"
+  task_filter "$task" >/dev/null
+  printf 'Task: %s\nFree-only: %s\nProvider order: %s\n' "$task" "$OPCODE_FREE_ONLY" "$OPCODE_PROVIDER_ORDER"
+  printf 'Eligible candidates:\n'
+  ranked_models "$task" | while IFS= read -r id; do
+    [[ -n "$id" ]] || continue
+    jq -r --arg id "$id" '.models[]|select(.id==$id)|"  \(.id) [\(.eligibility)] provider=\(.provider) capabilities=\(.capabilities|join(","))"' "$REGISTRY_FILE"
+  done
+}
+
+# Only explicit provider-admission failures qualify for automatic model fallback.
+# Generic errors, tool failures, timeouts, and unknown failures are not replayed.
+is_safe_admission_failure() {
+  local text="${1,,}"
+  [[ "$text" =~ model[[:space:]_-]*(not[[:space:]_-]*found|unavailable|unsupported) ]] ||
+  [[ "$text" =~ (http[[:space:]]*)?401|unauthorized|invalid[[:space:]_-]*api[[:space:]_-]*key ]] ||
+  [[ "$text" =~ (http[[:space:]]*)?403|forbidden|permission[[:space:]_-]*denied ]] ||
+  [[ "$text" =~ (http[[:space:]]*)?429|rate[[:space:]_-]*limit|quota[[:space:]_-]*(exceeded|exhausted) ]] ||
+  [[ "$text" =~ insufficient[[:space:]_-]*quota ]]
+}
+
+provider_key_array() {
+  local provider="$1"
+  provider_keys "$provider"
+}
+
+run_task() {
+  local task="$1" explicit="$2"; shift 2
+  (($#)) || die "Missing prompt. Usage: opcode run [options] -- <prompt>"
+  local prompt="$*"
+  if bool "$OPCODE_FREE_ONLY"; then :; else :; fi
+  if bool "$OPCODE_PAID_FALLBACK"; then :; else :; fi
+  if [[ "${OPCODE_FREE_ONLY,,}" == true && "${OPCODE_PAID_FALLBACK,,}" == true ]]; then
+    die "Configuration conflict: free-only mode cannot enable paid fallback."
+  fi
+  local candidates=()
+  mapfile -t candidates < <(ranked_models "$task" "$explicit")
+  ((${#candidates[@]})) || die "No eligible model found. Run catalog sync and verify model eligibility."
+  local attempts=0 model runtime_model provider key_var runtime_key keys=() key_index=0 output rc nvidia_auth_failed=0
+  TMP_DIR="$(mktemp -d)"
+  local out_file="$TMP_DIR/runtime.out"
+  for model in "${candidates[@]}"; do
+    provider="$(provider_of "$model")"
+    if [[ "$provider" == "nvidia" && "$nvidia_auth_failed" == "1" ]]; then
+      warn "Skipping remaining NVIDIA models because all configured NVIDIA credentials were rejected."
+      continue
+    fi
+    runtime_model="$model"
+    # Registry: nvidia/<publisher>/<model>:free; router runtime: nvidia/<publisher>/<model>.
+    # The direct NVIDIA API payload strips the outer provider namespace as well.
+    if [[ "$provider" == "nvidia" ]]; then
+      [[ "$runtime_model" =~ ^nvidia/[^/]+/[^/:]+:free$ ]] || die "Invalid direct NVIDIA catalog ID: $model"
+      runtime_model="${runtime_model%:free}"
+      [[ "$runtime_model" =~ ^nvidia/[^/]+/[^/:]+$ ]] || die "Invalid NVIDIA runtime ID: $runtime_model"
+    fi
+    key_var="$(env_var_for "$provider")"
+    mapfile -t keys < <(provider_key_array "$provider")
+    # If a provider has no OPCODE key pool, use the existing OpenCode auth configuration.
+    if ((${#keys[@]} == 0)); then keys=(""); fi
+    key_index=0
+    for runtime_key in "${keys[@]}"; do
+      (( attempts < OPCODE_MAX_ATTEMPTS )) || break
+      ((attempts+=1))
+      : >"$out_file"
+      info "Attempt $attempts/$OPCODE_MAX_ATTEMPTS model=$model provider=$provider key-slot=$((key_index+1))"
+      log_event info attempt "model=$model provider=$provider key_slot=$((key_index+1))"
+      if [[ "$provider" == "nvidia" ]]; then
+        if nvidia_model_is_benched "$model"; then
+          warn "Skipping NVIDIA model on cooldown: $model"
+          log_event warn model_cooldown "model=$model"
+          break
+        fi
+        if [[ -z "$runtime_key" ]]; then
+          warn "NVIDIA credential unavailable; skipping direct NVIDIA model: $model"
+          log_event warn missing_credentials "provider=nvidia model=$model"
+          break
+        fi
+        if nvidia_chat_completion "$runtime_key" "$runtime_model" "$prompt" "$out_file"; then
+          rc=0
+        else
+          rc=$?
+        fi
+      else
+        # Expected provider/runtime failures must be captured, not intercepted by
+        # the global ERR trap. An `if command; then ... else rc=$?` context keeps
+        # errexit/ERR handling from aborting before fallback classification.
+        if [[ -n "$runtime_key" && -n "$key_var" ]]; then
+          if env "$key_var=$runtime_key" "$OPENCODE_BIN" run --model "$runtime_model" "$prompt" >"$out_file" 2>&1; then
+            rc=0
+          else
+            rc=$?
+          fi
+        else
+          if "$OPENCODE_BIN" run --model "$runtime_model" "$prompt" >"$out_file" 2>&1; then
+            rc=0
+          else
+            rc=$?
+          fi
+        fi
+      fi
+      cat "$out_file"
+      if ((rc == 0)); then
+        log_event info success "model=$model provider=$provider"
+        return 0
+      fi
+
+      if [[ "$provider" == "nvidia" ]]; then
+        case "$rc" in
+          10)
+            log_event warn authentication_failure "provider=nvidia model=$model key_slot=$((key_index+1))"
+            if (( key_index + 1 < ${#keys[@]} )); then
+              warn "NVIDIA rejected this credential; trying the next configured NVIDIA credential."
+              ((key_index+=1))
+              continue
+            fi
+            warn "All configured NVIDIA credentials were rejected; falling back to the next provider."
+            nvidia_auth_failed=1
+            break
+            ;;
+          20)
+            nvidia_model_bench "$model" "${NVIDIA_COOLDOWN_ERR:-120}"
+            log_event warn model_unavailable "provider=nvidia model=$model"
+            warn "NVIDIA rejected this model/request; trying the next eligible model."
+            break
+            ;;
+          30)
+            nvidia_model_bench "$model" "${NVIDIA_COOLDOWN_429:-30}"
+            log_event warn rate_limited "provider=nvidia model=$model"
+            warn "NVIDIA rate limit/quota response; cooling down this model and trying the next eligible model."
+            break
+            ;;
+          *)
+            log_event error non_replayable_failure "provider=nvidia model=$model rc=$rc"
+            die "NVIDIA inference failed ambiguously (exit=$rc). No automatic replay was attempted; inspect the response and quota state."
+            ;;
+        esac
+      fi
+
+      if ! is_safe_admission_failure "$(cat "$out_file")"; then
+        log_event error non_replayable_failure "model=$model rc=$rc"
+        die "Runtime failed with a non-classified or potentially side-effecting error (exit=$rc). Stopping; inspect task state before retrying."
+      fi
+      log_event warn admission_failure "model=$model rc=$rc"
+      warn "Provider rejected the request before inference; trying the next configured credential/model."
+      ((key_index+=1))
+      exponent=$((attempts > 7 ? 6 : attempts - 1))
+      delay=$((OPCODE_RETRY_BASE_SECONDS * (2 ** exponent)))
+      (( delay > 60 )) && delay=60
+      jitter=$(( delay > 1 ? RANDOM % (delay / 2 + 1) : 0 ))
+      sleep $((delay + jitter))
+    done
+    (( attempts < OPCODE_MAX_ATTEMPTS )) || break
+  done
+  die "All eligible free-model attempts were exhausted."
+}
+
+main() {
+  need jq
+  load_config
+  local cmd="${1:-help}"; shift || true
+  case "$cmd" in
+    help|-h|--help) usage ;;
+    --version|-V|version) printf '%s %s\n' "$APP" "$VERSION" ;;
+    init) cmd_init ;;
+    doctor) ensure_dirs; init_registry; cmd_doctor ;;
+    status) ensure_dirs; init_registry; cmd_status ;;
+    catalog)
+      ensure_dirs; init_registry
+      case "${1:-}" in
+        import) shift; (($#==1)) || die "Usage: opcode catalog import <model-list-file>"; catalog_import "$1" ;;
+        sync-openrouter) sync_openrouter ;;
+        sync-nvidia) sync_nvidia ;;
+        sync-nvidia-build) sync_nvidia_build ;;
+        verify-nvidia) verify_nvidia ;;
+        *) die "Usage: opcode catalog {import <file>|sync-openrouter|sync-nvidia|sync-nvidia-build|verify-nvidia}" ;;
+      esac ;;
+    models)
+      ensure_dirs; init_registry
+      case "${1:-list}" in
+        list) shift || true; models_list "$@" ;;
+        verify-free) verify_free ;;
+        mark-free) shift; mark_free "$@" ;;
+        *) die "Usage: opcode models {list [--free-only]|verify-free|mark-free ...}" ;;
+      esac ;;
+    route)
+      ensure_dirs; init_registry
+      [[ "${1:-}" == "explain" ]] || die "Usage: opcode route explain [--task <task>]"
+      shift; task="$OPCODE_TASK_DEFAULT"
+      while (($#)); do case "$1" in --task) task="${2:-}"; shift 2 ;; *) die "Unknown route option: $1" ;; esac; done
+      route_explain "$task" ;;
+    run)
+      ensure_dirs; init_registry
+      task="$OPCODE_TASK_DEFAULT"; model=""
+      while (($#)); do
+        case "$1" in
+          --task) task="${2:-}"; shift 2 ;;
+          --model) model="${2:-}"; shift 2 ;;
+          --) shift; break ;;
+          -h|--help) usage; return 0 ;;
+          *) break ;;
+        esac
+      done
+      task_filter "$task" >/dev/null
+      run_task "$task" "$model" "$@" ;;
+    config)
+      [[ "${1:-}" == show ]] || die "Usage: opcode config show"
+      printf 'Config: %s\nRegistry: %s\n' "$CONFIG_FILE" "$REGISTRY_FILE"
+      [[ -f "$CONFIG_FILE" ]] && sed -E 's/^([A-Za-z0-9_]*(KEY|TOKEN|SECRET)[A-Za-z0-9_]*)=.*/\1=[REDACTED]/' "$CONFIG_FILE" ||
+        warn "No config file; run opcode init." ;;
+    *) usage; die "Unknown command: $cmd" ;;
+  esac
+}
+
+ensure_dirs
+if have flock; then
+  exec 9>"$LOCK_FILE"
+  flock -n 9 || die "Another OPCODE process is running."
+fi
+main "$@"

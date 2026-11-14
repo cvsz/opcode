@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""OpenCode router with provider-scoped multi-API-key rotation and circuit breakers."""
+"""OPCODE router with direct NVIDIA NIM inference and provider-scoped key rotation."""
 from __future__ import annotations
 
 import argparse
@@ -9,8 +9,9 @@ import json
 import os
 import pathlib
 import re
-import subprocess  # nosec B404 - subprocess used for controlled CLI calls with shell=False
+import subprocess  # nosec B404 # subprocess used for controlled CLI calls with shell=False
 import sys
+import threading
 import time
 import urllib.error
 import urllib.parse
@@ -45,6 +46,10 @@ REQUIRE_ENV_KEY = _cfg.require_env_key
 ROUTER_AUTO = _cfg.router_auto
 ROUTER_ARCHIVED = _cfg.router_archived
 OPENCODE_QUERY_TIMEOUT = _cfg.open_code_query_timeout
+NVIDIA_STATE = STATE / "nvidia-models.json"
+_NVIDIA_RATE_LOCK = threading.Lock()
+_NVIDIA_LAST_REQUEST = 0.0
+_NVIDIA_BENCHED: dict[str, float] = {}
 
 # Models cache wrapper
 class _ModelsCache:
@@ -171,7 +176,7 @@ def _opencode(args: list[str], env: dict[str, str] | None = None):
     """Run a short catalogue/help query. Raises RuntimeError on timeout."""
     timeout = query_timeout()
     try:
-        return subprocess.run(  # nosec B603 - controlled command list, shell=False
+        return subprocess.run(  # nosec B603 # controlled command list, shell=False
             [OPENCODE, *args],
             capture_output=True,
             text=True,
@@ -230,7 +235,7 @@ def v2_runs_create(model: str, prompt: str, auto: bool, archived: bool,
     events: list[dict] = []
     run_id = ""
     try:
-        with urllib.request.urlopen(req, timeout=timeout if timeout is not None and timeout > 0 else None) as resp:  # nosec B310 - URL validated by _validate_url()
+        with urllib.request.urlopen(req, timeout=timeout if timeout is not None and timeout > 0 else None) as resp:  # nosec B310 # URL validated by _validate_url()
             for raw in resp:
                 line = raw.decode("utf-8", errors="replace").strip()
                 if not line:
@@ -261,7 +266,7 @@ def v2_runs_get(run_id: str, password: str | None = None) -> dict:
     if password:
         req.add_header("Authorization", f"Bearer {password}")
     try:
-        with urllib.request.urlopen(req, timeout=30) as resp:  # nosec B310 - URL validated by _validate_url()
+        with urllib.request.urlopen(req, timeout=30) as resp:  # nosec B310 # URL validated by _validate_url()
             return json.loads(resp.read().decode("utf-8"))
     except urllib.error.HTTPError as e:
         raise RuntimeError(f"v2 API /api/runs/{run_id} failed: {e.code}") from e
@@ -276,7 +281,7 @@ def v2_runs_cancel(run_id: str, password: str | None = None) -> None:
     if password:
         req.add_header("Authorization", f"Bearer {password}")
     try:
-        urllib.request.urlopen(req, timeout=30)  # nosec B310 - URL validated by _validate_url()
+        urllib.request.urlopen(req, timeout=30)  # nosec B310 # URL validated by _validate_url()
     except urllib.error.HTTPError as e:
         raise RuntimeError(f"v2 API cancel failed: {e.code}") from e
     except urllib.error.URLError as e:
@@ -393,7 +398,12 @@ def adaptive_order(models: list[str]) -> list[str]:
     if os.getenv("ADAPTIVE_ORDER", "0") != "1":
         return models
     rates = smoothed_rates()
-    return sorted(models, key=lambda m: -rates.get(m, 0.5))  # stable: ties keep configured order
+    # Reliability may reorder within each namespace, while NVIDIA-published models
+    # remain ahead of other NVIDIA-hosted publishers and other providers.
+    return sorted(
+        models,
+        key=lambda m: (0 if m.startswith("nvidia/nvidia/") else 1 if m.startswith("nvidia/") else 2, -rates.get(m, 0.5)),
+    )
 
 
 _TASK_CACHE: dict[str, list[str]] = {}
@@ -408,6 +418,17 @@ def task_models(task: str) -> list[str]:
         for x in (CONFIG / f"{task}.txt").read_text().splitlines()
         if x.strip() and not x.lstrip().startswith("#")
     ]
+    models = [
+        f"{model}:free" if model.startswith("nvidia/") and not model.endswith(":free") else model
+        for model in models
+    ]
+    allowlist_path = CONFIG / "nvidia-free-models.txt"
+    allowlist = {
+        line.strip()
+        for line in allowlist_path.read_text(encoding="utf-8").splitlines()
+        if line.strip() and not line.lstrip().startswith("#")
+    } if allowlist_path.is_file() else set()
+    models = [model for model in models if not model.startswith("nvidia/") or model in allowlist]
     _TASK_CACHE[task] = models
     return models
 
@@ -427,6 +448,236 @@ def get_available() -> str:
     _models_cache.data = result
     _models_cache.timestamp = now
     return result
+
+
+def nvidia_canonical_id(native_id: str) -> str:
+    """Map NVIDIA's native publisher/model ID to OPCODE's provider-qualified catalog ID."""
+    value = str(native_id).strip()
+    if value.endswith(":free"):
+        value = value[:-5]
+    if not re.fullmatch(r"[^/]+/[^/:]+", value):
+        raise ValueError(f"Invalid NVIDIA native model ID: {value!r}")
+    return f"nvidia/{value}:free"
+
+
+def nvidia_native_id(canonical_id: str) -> str:
+    """Convert nvidia/<publisher>/<model>[:free] to publisher/model for NIM API."""
+    value = str(canonical_id).strip()
+    if not value.startswith("nvidia/"):
+        raise ValueError("NVIDIA model must use the nvidia/ provider namespace")
+    native = value[len("nvidia/"):]
+    if native.endswith(":free"):
+        native = native[:-5]
+    if not re.fullmatch(r"[^/]+/[^/:]+", native):
+        raise ValueError(f"Invalid canonical NVIDIA model ID: {canonical_id!r}")
+    return native
+
+
+def _nvidia_base_url() -> str:
+    base = os.getenv("NVIDIA_BASE_URL", "https://integrate.api.nvidia.com/v1").rstrip("/")
+    parsed = urllib.parse.urlparse(base)
+    if parsed.scheme != "https" and not (
+        parsed.scheme == "http" and parsed.hostname in {"127.0.0.1", "localhost", "::1"}
+    ):
+        raise ValueError("NVIDIA_BASE_URL must use HTTPS (HTTP is allowed only for loopback tests)")
+    if not parsed.hostname or parsed.username or parsed.password or parsed.query or parsed.fragment:
+        raise ValueError("Invalid NVIDIA_BASE_URL")
+    return base
+
+
+class _RejectRedirects(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+class NvidiaAPIError(RuntimeError):
+    def __init__(self, status: int, message: str):
+        super().__init__(message)
+        self.status = status
+
+
+class NvidiaTransportError(RuntimeError):
+    pass
+
+
+def _nvidia_rate_limit() -> None:
+    global _NVIDIA_LAST_REQUEST
+    try:
+        rpm = int(os.getenv("NVIDIA_RPM", "35"))
+    except ValueError as exc:
+        raise ValueError("NVIDIA_RPM must be a positive integer") from exc
+    if rpm < 1:
+        raise ValueError("NVIDIA_RPM must be a positive integer")
+    interval = 60.0 / rpm
+    with _NVIDIA_RATE_LOCK:
+        now = time.monotonic()
+        delay = _NVIDIA_LAST_REQUEST + interval - now
+        if delay > 0:
+            time.sleep(delay)
+        _NVIDIA_LAST_REQUEST = time.monotonic()
+
+
+def _nvidia_request(path: str, api_key: str, *, payload: dict[str, Any] | None = None,
+                    timeout: float = 30.0) -> dict[str, Any]:
+    base = _nvidia_base_url()
+    if not path.startswith("/") or ".." in path.split("/"):
+        raise ValueError("Invalid NVIDIA API path")
+    body = None if payload is None else json.dumps(payload, separators=(",", ":")).encode("utf-8")
+    request = urllib.request.Request(
+        f"{base}{path}",
+        data=body,
+        headers={
+            "Authorization": f"Bearer {api_key}",
+            "Accept": "application/json",
+            **({"Content-Type": "application/json"} if body is not None else {}),
+        },
+        method="GET" if body is None else "POST",
+    )
+    _nvidia_rate_limit()
+    opener = urllib.request.build_opener(_RejectRedirects())
+    try:
+        with opener.open(request, timeout=timeout) as response:
+            raw = response.read(8 * 1024 * 1024 + 1)
+            if len(raw) > 8 * 1024 * 1024:
+                raise NvidiaTransportError("NVIDIA response exceeded the 8 MiB safety limit")
+    except urllib.error.HTTPError as exc:
+        raw = exc.read(64 * 1024).decode("utf-8", errors="replace")
+        try:
+            parsed = json.loads(raw)
+            message = parsed.get("error", {}).get("message") or parsed.get("detail") or parsed.get("message") or raw
+        except (json.JSONDecodeError, AttributeError):
+            message = raw
+        safe_message = str(message).replace(api_key, "[REDACTED]")[:1000]
+        raise NvidiaAPIError(exc.code, safe_message or f"HTTP {exc.code}") from exc
+    except (urllib.error.URLError, TimeoutError, OSError) as exc:
+        raise NvidiaTransportError(f"NVIDIA transport failure: {type(exc).__name__}") from exc
+    try:
+        data = json.loads(raw)
+    except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+        raise NvidiaTransportError("NVIDIA returned invalid JSON") from exc
+    if not isinstance(data, dict):
+        raise NvidiaTransportError("NVIDIA returned an unexpected JSON response")
+    return data
+
+
+def sync_nvidia_catalog() -> list[str]:
+    """Discover NVIDIA API models and persist provider-qualified IDs with :free suffix."""
+    keys = key_candidates("nvidia")
+    if not keys:
+        raise RuntimeError("NVIDIA credentials are not configured in the environment")
+    last_error: Exception | None = None
+    inventory: dict[str, Any] | None = None
+    for key in keys:
+        try:
+            inventory = _nvidia_request("/models", key["secret"], timeout=30.0)
+            if key["slot"] > 0:
+                key_mark("nvidia", key["slot"], "success")
+            break
+        except NvidiaAPIError as exc:
+            last_error = exc
+            if exc.status in (401, 403):
+                if key["slot"] > 0:
+                    key_mark("nvidia", key["slot"], "authentication")
+                continue
+            raise
+    if inventory is None:
+        raise RuntimeError(f"NVIDIA catalog authentication failed: {last_error}")
+    raw_models = inventory.get("data")
+    if not isinstance(raw_models, list):
+        raise RuntimeError("NVIDIA /models response has no data array")
+    native_ids: list[str] = []
+    for item in raw_models:
+        if not isinstance(item, dict) or not isinstance(item.get("id"), str):
+            raise RuntimeError("NVIDIA /models response contains an invalid model record")
+        native_ids.append(item["id"])
+    canonical = sorted({nvidia_canonical_id(item) for item in native_ids})
+    STATE.mkdir(parents=True, exist_ok=True)
+    save_json(NVIDIA_STATE, {
+        "provider": "nvidia",
+        "fetched_at": iso(),
+        "models": canonical,
+    })
+    return canonical
+
+
+def get_nvidia_available(refresh: bool = False) -> list[str]:
+    """Read cached NVIDIA catalog; refresh on expiry when credentials are available."""
+    cache = load_json(NVIDIA_STATE, {})
+    models = cache.get("models", []) if isinstance(cache, dict) else []
+    fetched_at = cache.get("fetched_at") if isinstance(cache, dict) else None
+    ttl = max(0, int(os.getenv("NVIDIA_MODELS_CACHE_TTL", "300")))
+    fresh = False
+    if isinstance(fetched_at, str):
+        try:
+            fetched = dt.datetime.fromisoformat(fetched_at)
+            if fetched.tzinfo is None:
+                fetched = fetched.replace(tzinfo=dt.timezone.utc)
+            fresh = (utcnow() - fetched).total_seconds() < ttl
+        except ValueError:
+            fresh = False
+    if not refresh and fresh and isinstance(models, list):
+        return [x for x in models if isinstance(x, str)]
+    if not key_candidates("nvidia"):
+        return [x for x in models if isinstance(x, str)] if isinstance(models, list) else []
+    try:
+        return sync_nvidia_catalog()
+    except (RuntimeError, ValueError, OSError) as exc:
+        log.warning("NVIDIA catalog refresh failed: %s", type(exc).__name__)
+        return [x for x in models if isinstance(x, str)] if isinstance(models, list) else []
+
+
+def nvidia_model_benched(model: str) -> bool:
+    return _NVIDIA_BENCHED.get(model, 0.0) > time.monotonic()
+
+
+def nvidia_bench(model: str, seconds: int) -> None:
+    _NVIDIA_BENCHED[model] = time.monotonic() + max(0, seconds)
+
+
+def nvidia_chat_completion(model: str, prompt: str, api_key: str, timeout: float) -> str:
+    """Text-only direct NVIDIA NIM inference; never invokes OpenCode or tool execution."""
+    native_id = nvidia_native_id(model)
+    try:
+        max_tokens = int(os.getenv("NVIDIA_MAX_TOKENS", "1024"))
+    except ValueError as exc:
+        raise ValueError("NVIDIA_MAX_TOKENS must be a positive integer") from exc
+    if not 1 <= max_tokens <= 65536:
+        raise ValueError("NVIDIA_MAX_TOKENS must be between 1 and 65536")
+    try:
+        provider_timeout = float(os.getenv("NVIDIA_TIMEOUT", "90"))
+    except ValueError as exc:
+        raise ValueError("NVIDIA_TIMEOUT must be a positive number") from exc
+    if provider_timeout <= 0:
+        raise ValueError("NVIDIA_TIMEOUT must be a positive number")
+    effective_timeout = min(timeout, provider_timeout) if timeout > 0 else provider_timeout
+    response = _nvidia_request(
+        "/chat/completions",
+        api_key,
+        payload={
+            "model": native_id,
+            "messages": [{"role": "user", "content": prompt}],
+            "max_tokens": max_tokens,
+        },
+        timeout=effective_timeout,
+    )
+    choices = response.get("choices")
+    if not isinstance(choices, list) or not choices or not isinstance(choices[0], dict):
+        raise NvidiaTransportError("NVIDIA chat-completion response has no choices")
+    message = choices[0].get("message", {})
+    content = message.get("content") if isinstance(message, dict) else None
+    if isinstance(content, str):
+        answer = content
+    elif isinstance(content, list):
+        answer = "".join(
+            str(part.get("text", ""))
+            for part in content
+            if isinstance(part, dict) and part.get("type") == "text"
+        )
+    else:
+        answer = ""
+    if not answer:
+        raise NvidiaTransportError("NVIDIA chat-completion response contains no text")
+    return answer
 
 
 def circuit_is_open(model: str) -> bool:
@@ -502,7 +753,7 @@ def key_candidates(provider: str) -> list[dict[str, Any]]:
     providers = load_json(CONFIG / "providers.json", {"providers": {}}).get("providers", {})
     provider_cfg = providers.get(provider)
     if not provider_cfg:
-        return [{"slot": 0, "env_name": None, "secret": None, "auth_env": None}]  # nosec: B105 - None is Python's None value, not a hardcoded password string.
+        return [{"slot": 0, "env_name": None, "secret": None, "auth_env": None}]  # nosec # None sentinel, not a hardcoded password
     auth_env = provider_cfg["auth_env"]
 
     now = time.monotonic()
@@ -609,9 +860,39 @@ def route(args: Any, config_obj: cfg_mod.Config | None = None) -> int:
         raise ValueError("limits must be non-negative")
     if not isinstance(args.prompt, str) or not args.prompt.strip():
         raise ValueError("PROMPT is required")
-    available = get_available()
     candidates = [args.model] if args.model else task_models(args.task)
-    candidates = [m for m in candidates if model_available(m, available) and not circuit_is_open(m)]
+    try:
+        available = get_available()
+    except RuntimeError as exc:
+        available = ""
+        log.warning("OpenCode catalogue unavailable; non-NVIDIA fallback candidates will be skipped: %s",
+                    type(exc).__name__)
+    candidates = [
+        f"{model}:free" if model.startswith("nvidia/") and not model.endswith(":free") else model
+        for model in candidates
+    ]
+    # Keep NVIDIA's own publisher namespace first, then other NVIDIA-hosted publishers.
+    candidates = sorted(
+        candidates,
+        key=lambda model: 0 if model.startswith("nvidia/nvidia/") else 1 if model.startswith("nvidia/") else 2,
+    )
+    allowlist_path = CONFIG / "nvidia-free-models.txt"
+    allowlist = {
+        line.strip()
+        for line in allowlist_path.read_text(encoding="utf-8").splitlines()
+        if line.strip() and not line.lstrip().startswith("#")
+    } if allowlist_path.is_file() else set()
+    candidates = [model for model in candidates if not model.startswith("nvidia/") or model in allowlist]
+    nvidia_candidates = [model for model in candidates if model.startswith("nvidia/")]
+    nvidia_available = set(get_nvidia_available()) if nvidia_candidates else set()
+    candidates = [
+        model for model in candidates
+        if (
+            (model in nvidia_available if model.startswith("nvidia/") else model_available(model, available))
+            and not circuit_is_open(model)
+            and not (model.startswith("nvidia/") and nvidia_model_benched(model))
+        )
+    ]
     if not args.model:
         candidates = adaptive_order(candidates)
     if args.max_models > 0:
@@ -624,12 +905,20 @@ def route(args: Any, config_obj: cfg_mod.Config | None = None) -> int:
             print(m)
         return 0
     task_id = str(uuid.uuid4())
+    nvidia_auth_failed = False
     for model in candidates:
         provider = model.split("/", 1)[0]
+        if provider == "nvidia" and nvidia_auth_failed:
+            log.warning("Skipping remaining NVIDIA models because all configured NVIDIA credentials were rejected")
+            continue
         keys = key_candidates(provider)
         if not keys and not REQUIRE_ENV_KEY:
             # No env keys: use credentials stored by `opencode auth login` (or key-less free models).
-            keys = [{"slot": 0, "env_name": None, "secret": None, "auth_env": None}]  # nosec: B105 - None is Python's None value, not a hardcoded password string.
+            keys = [{"slot": 0, "env_name": None, "secret": None, "auth_env": None}]  # nosec # None sentinel, not a hardcoded password
+        if not keys and provider == "nvidia":
+            log.info("no NVIDIA API key configured; skipping direct NVIDIA model=%s", model)
+            emit({"task_id": task_id, "task": args.task, "model": model, "provider": provider, "status": "skipped", "error_category": "missing_credentials"})
+            continue
         if not keys:
             log.info("no API key configured for provider=%s; skipping %s", provider, model)
             emit({"task_id": task_id, "task": args.task, "model": model, "status": "skipped", "error_category": "missing_credentials"})
@@ -637,6 +926,61 @@ def route(args: Any, config_obj: cfg_mod.Config | None = None) -> int:
         for key in keys:
             log.info("model=%s provider=%s key_slot=%s", model, provider, key["slot"])
             start = time.monotonic()
+            if provider == "nvidia":
+                try:
+                    answer = nvidia_chat_completion(model, args.prompt, key["secret"], args.timeout)
+                    category = "success"
+                    duration = round(time.monotonic() - start, 3)
+                    circuit_update(model, category, True)
+                    if key["slot"] > 0:
+                        key_mark(provider, key["slot"], "success")
+                    emit({
+                        "task_id": task_id, "task": args.task, "model": model,
+                        "provider": provider, "key_slot": key["slot"],
+                        "status": "success", "error_category": "success",
+                        "exit_code": 0, "latency_seconds": duration,
+                    })
+                    sys.stdout.write(answer)
+                    print(f"\n[router] success model={model} provider=nvidia-direct latency={duration}s", file=sys.stderr)
+                    return 0
+                except NvidiaAPIError as exc:
+                    category = (
+                        "authentication" if exc.status in (401, 403) else
+                        "quota_exhausted" if exc.status == 402 else
+                        "rate_limited" if exc.status == 429 else
+                        "model_unavailable" if exc.status in (400, 404, 422) else
+                        "provider_outage" if exc.status >= 500 else
+                        "execution_error"
+                    )
+                    error_text = str(exc).replace(key["secret"], "[REDACTED]")
+                except (NvidiaTransportError, ValueError) as exc:
+                    category = "timeout" if "timeout" in str(exc).lower() else "provider_outage"
+                    error_text = str(exc).replace(key["secret"], "[REDACTED]")
+                duration = round(time.monotonic() - start, 3)
+                circuit_update(model, category, False)
+                if key["slot"] > 0 and category == "authentication":
+                    key_mark(provider, key["slot"], "authentication")
+                emit({
+                    "task_id": task_id, "task": args.task, "model": model,
+                    "provider": provider, "key_slot": key["slot"],
+                    "status": "failure", "error_category": category,
+                    "exit_code": 1, "latency_seconds": duration,
+                })
+                log.warning("NVIDIA direct inference failed model=%s category=%s detail=%s",
+                            model, category, last_line(error_text, key["secret"]))
+                if category == "authentication":
+                    nvidia_auth_failed = True
+                    continue
+                if category != "authentication":
+                    nvidia_auth_failed = False
+                if category in {"rate_limited", "quota_exhausted"}:
+                    nvidia_bench(model, _int_env("NVIDIA_COOLDOWN_429", 30))
+                    break
+                if category == "model_unavailable":
+                    nvidia_bench(model, _int_env("NVIDIA_COOLDOWN_ERR", 120))
+                    break
+                # A timeout/5xx can have consumed inference quota; do not replay it on another model.
+                return 1
             server = os.getenv("OPENCODE_SERVER")
             if server:
                 try:
@@ -730,7 +1074,7 @@ def route(args: Any, config_obj: cfg_mod.Config | None = None) -> int:
                 if os.getenv("OPENCODE_FORMAT_JSON", "0") == "1" and supports_flag("run", "--format"):
                     cmd.append("--format")
                     cmd.append("json")
-                proc = subprocess.run(  # nosec: B603 — static command list; prompt passed as argv, never through a shell
+                proc = subprocess.run(  # nosec B603 # static command list; prompt passed as argv, never through a shell
                     cmd + [args.prompt],
                     capture_output=True,
                     text=True,
@@ -800,6 +1144,7 @@ def main() -> int:
     p = argparse.ArgumentParser()
     sub = p.add_subparsers(dest="cmd", required=True)
     sub.add_parser("check")
+    sub.add_parser("sync-nvidia")
     plan = sub.add_parser("plan")
     plan.add_argument("--task", default=os.getenv("TASK", "code"))
     r = sub.add_parser("route")
@@ -825,10 +1170,22 @@ def main() -> int:
         print(f"{found}/{len(reg)} found")
         return 0
     if a.cmd == "plan":
-        avail = get_available()
-        for m in task_models(a.task):
-            status = "CIRCUIT_OPEN" if circuit_is_open(m) else ("READY" if model_available(m, avail) else "NOT_LISTED")
+        try:
+            avail = get_available()
+        except RuntimeError:
+            avail = ""
+        models = task_models(a.task)
+        nvidia_available = set(get_nvidia_available()) if any(m.startswith("nvidia/") for m in models) else set()
+        for m in models:
+            is_available = m in nvidia_available if m.startswith("nvidia/") else model_available(m, avail)
+            status = "CIRCUIT_OPEN" if circuit_is_open(m) else ("READY" if is_available else "NOT_LISTED")
             print(f"[{status}] {m}")
+        return 0
+    if a.cmd == "sync-nvidia":
+        models = sync_nvidia_catalog()
+        print(f"NVIDIA catalog synchronized: {len(models)} model IDs")
+        for model in models:
+            print(model)
         return 0
     if a.cmd == "route":
         if a.max_models < 0 or a.timeout < 0:

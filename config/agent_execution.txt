@@ -1,0 +1,4 @@
+# Ordered task candidates. NVIDIA IDs use the canonical :free catalog suffix.
+opencode/beam-free
+opencode/minimax-m3.1-flash-free
+opencode/glm-5.3-flash-free
