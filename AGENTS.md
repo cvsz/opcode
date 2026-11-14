@@ -26,7 +26,7 @@ scripts/           Router, key pool, optimizer, orchestrator, quality gate, stat
 config/            Per-task ordered model lists (code, review, fast, vision, general)
 state/             Runtime state (events.jsonl, circuits.json, key-pools.json, audit.jsonl,
                    dashboard-settings.json, router.db SQLite WAL)
-tests/             Python unittest suite (96 tests incl. JSON logging + SQLite concurrency + NDJSON classify + correlation IDs + integration)
+tests/             Python unittest suite (143 tests incl. JSON logging + SQLite concurrency + NDJSON classify + correlation IDs + integration)
 .github/           CI workflow, Dependabot, issue templates
 docs/              Plans, specs, and Final-Report.md
 Makefile           All-in-one control: start/stop/status/restart, test/lint/type-check/security-scan/ci-all
@@ -53,7 +53,7 @@ make restart
 # Run dashboard control panel (http://127.0.0.1:8765)
 python dashboard/server.py --host 127.0.0.1 --port 8765
 
-# Run the test suite (79 tests)
+# Run the test suite (143 tests)
 python -m unittest discover -s tests -v
 
 # Compile-check all Python

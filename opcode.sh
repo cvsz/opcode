@@ -104,7 +104,10 @@ load_env_file() {
     fi
     case "$key" in
       OPENROUTER_API_KEY|OPENROUTER_API_KEYS|OPENROUTER_API_KEY_[0-9]*)
-        printf -v "$key" '%s' "$value"; export "$key" ;;
+        printf -v "$key" '%s' "$value"
+        # shellcheck disable=SC2163
+        export "$key"
+        ;;
     esac
   done < "$file"
 }

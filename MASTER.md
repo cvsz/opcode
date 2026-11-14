@@ -7,7 +7,7 @@ All 12 refactor areas are complete and merged into `main`. Enterprise final pass
 - scripts/config.py — centralized Config dataclass
 - scripts/logging_setup.py — shared logging (with RotatingFileHandler support)
 - scripts/router.py — type hints, logging, module-level patchable state
-- 96 tests pass
+- 143 tests pass
 
 ## Phase 2: CLI subprocess → opencode v2 API ✅
 - scripts/router.py: route() calls POST /api/runs (v2 API), parses NDJSON when OPENCODE_SERVER set
@@ -45,7 +45,7 @@ All 12 refactor areas are complete and merged into `main`. Enterprise final pass
 - aiohttp or asyncio http.server (ThreadingHTTPServer works fine; optional)
 
 ## Phase 8: Expanded tests ✅
-- 96 tests total (up from 77)
+- 143 tests total (up from 96)
 - SSE /api/stream connection + broadcast (tested via server)
 - POST /api/token/regen invalidating old token
 - GET /api/audit entries after mutating calls
@@ -55,6 +55,8 @@ All 12 refactor areas are complete and merged into `main`. Enterprise final pass
 - classify_from_ndjson() tests (success, error, malformed, tool-calls)
 - Correlation ID propagation tests
 - Integration test suite (full pipeline, circuit breaker, key pool, audit)
+- NVIDIA Build catalog tests (33): realistic fixtures, malformed responses, change detection, snapshot round-trip, idempotency, never-upgrade-unknown invariant
+- Multi-provider free-model allowlists (NVIDIA Build, OpenRouter, OpenCode, Kilo)
 
 ## Docs ✅
 - AGENTS.md, CLAUDE.md, CODEX.md, GEMINI.md
@@ -66,11 +68,12 @@ All 12 refactor areas are complete and merged into `main`. Enterprise final pass
 
 ## Verification ✅
 - python -m py_compile scripts/*.py dashboard/server.py — clean
-- python -m unittest discover -s tests -v — 96 tests, OK
+- python -m unittest discover -s tests -v — 143 tests, OK
 - No committed __pycache__ or .pyc files
 - Rate limiting, token rotation, audit log all functional
 - CI passes on Python 3.10–3.13
-- bandit: HIGH=0, MEDIUM=0 (mitigated), LOW=17 (accepted/false positive)
-- pip-audit: 25 dependencies flagged (environment-level, not code bugs)
+- bandit: HIGH=0, MEDIUM=0, LOW=0
+- pip-audit: environment-level flags only (not code bugs)
 - Log rotation functional (RotatingFileHandler)
 - Correlation IDs propagate end-to-end
+- shellcheck: all shell scripts clean (exit 0)

@@ -9,7 +9,7 @@
 - [x] scripts/config.py — centralized Config dataclass
 - [x] scripts/logging_setup.py — shared logging (with RotatingFileHandler support)
 - [x] scripts/router.py — type hints, logging, module-level patchable state
-- [x] tests pass (96 total)
+- [x] tests pass (143 total)
 
 ### Phase 2: CLI subprocess → opencode v2 API ✅
 - [x] scripts/router.py: route() calls POST /api/runs (v2 API), parses NDJSON when OPENCODE_SERVER set
@@ -47,7 +47,7 @@
 - [ ] aiohttp or asyncio http.server (ThreadingHTTPServer works fine; optional)
 
 ### Phase 8: Expanded tests ✅
-- [x] 96 tests total (up from 77)
+- [x] 143 tests total (up from 96)
 - [x] SSE /api/stream connection + broadcast (tested via server)
 - [x] POST /api/token/regen invalidating old token
 - [x] GET /api/audit entries after mutating calls
@@ -58,6 +58,8 @@
 - [x] classify_from_ndjson() tests (success, error, malformed, tool-calls)
 - [x] Correlation ID propagation tests
 - [x] Integration test suite (full pipeline, circuit breaker, key pool, audit)
+- [x] NVIDIA Build catalog tests (33): realistic fixtures, malformed responses, change detection, snapshot round-trip, idempotency, never-upgrade-unknown invariant
+- [x] Multi-provider free-model allowlists (NVIDIA Build, OpenRouter, OpenCode, Kilo)
 
 ## Docs ✅
 - [x] AGENTS.md, CLAUDE.md, CODEX.md, GEMINI.md
@@ -69,7 +71,7 @@
 
 ## Verification ✅
 - [x] python -m py_compile scripts/*.py dashboard/server.py — clean
-- [x] python -m unittest discover -s tests -v — 96 tests, OK
+- [x] python -m unittest discover -s tests -v — 143 tests, OK
 - [x] No committed __pycache__ or .pyc files
 - [x] Rate limiting, token rotation, audit log all functional
 - [x] CI passes on Python 3.10–3.13
@@ -77,3 +79,5 @@
 - [x] Security: SSRF neutralized (url scheme validation http/https only)
 - [x] Log rotation functional (RotatingFileHandler)
 - [x] Correlation IDs propagate end-to-end
+- [x] shellcheck: all shell scripts clean (exit 0)
+- [x] bandit: HIGH=0, MEDIUM=0, LOW=0
